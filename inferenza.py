@@ -18,8 +18,9 @@ CURRENT_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR           = os.path.dirname(CURRENT_SCRIPT_DIR)
 
 WEIGHTS_PATH       = os.path.join(BASE_DIR, "weights.pt")
-INPUT_DIR          = os.path.join(BASE_DIR, "training_patches_ir")
 OUTPUT_DIR         = os.path.join(BASE_DIR, "risultati_finali")
+# Ora l'input è la cartella "pair" generata dal primo script
+INPUT_DIR          = os.path.join(OUTPUT_DIR, "pair") 
 INFERENCE_DIR      = os.path.join(OUTPUT_DIR, "inferenza_pannelli")
 
 # Mappa colori BGR
@@ -87,7 +88,7 @@ def main():
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
-        print(f"ERRORE: Cartella {args.input} non trovata.")
+        print(f"ERRORE: Cartella {args.input} non trovata. Esegui prima lo script di registrazione.")
         return
 
     os.makedirs(args.output, exist_ok=True)
@@ -95,8 +96,9 @@ def main():
     from rfdetr import RFDETRSegLarge
     model = RFDETRSegLarge(pretrain_weights=WEIGHTS_PATH, num_classes=2)
 
-    files = sorted(glob.glob(os.path.join(args.input, "*.jpg")))
-    print(f"[*] Elaborazione di {len(files)} patch...")
+    # Cerca esplicitamente solo i file che terminano con "_patch.jpg"
+    files = sorted(glob.glob(os.path.join(args.input, "*_patch.jpg")))
+    print(f"[*] Elaborazione di {len(files)} patch estratte dalla cartella pair...")
 
     for i, path in enumerate(files):
         img_bgr = cv2.imread(path)
@@ -117,6 +119,7 @@ def main():
 
         if lista_det:
             annotata = disegna_rilevamento(img_bgr, lista_det)
+            # Salva mantenendo il nome del file originale (es: det_pair1_patch.jpg)
             cv2.imwrite(os.path.join(args.output, f"det_{os.path.basename(path)}"), annotata)
 
     print(f"\n[FINE] Fatto! Ora i perimetri seguono esattamente la maschera rilevata. Salvati in: {args.output}")
