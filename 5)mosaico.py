@@ -178,8 +178,6 @@ def genera_report_pdf_a2a(dati, pdf_path):
     y_cursor += 50
     add_row("Tecnologia Moduli", dati['tipo_pannello'], col1_x, y_cursor, bold=True)
     y_cursor += 40
-    add_row("Efficienza Nominale (STC)", f"{dati['eta_nominale_assoluta']:.1f}%", col1_x, y_cursor)
-    y_cursor += 40
     add_row("Ore Pieno Sole (ESH)", f"{dati['esh']:.2f} h/giorno", col1_x, y_cursor)
     
     y_cursor += 80
