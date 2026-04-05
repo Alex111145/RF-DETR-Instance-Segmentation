@@ -41,6 +41,9 @@ EPSILON_VETRO = 0.90
 G_IRR_STC     = 1000.0
 T_STC_K       = 298.15
 
+# ---> FILTRO AREA: ~1.5 m² <---
+SOGLIA_AREA_PX = 6000 
+
 # ==============================================================================
 # INTERFACCIA UTENTE E API
 # ==============================================================================
@@ -77,7 +80,6 @@ def estrai_gps_time(image_path):
         import re
         img = Image.open(image_path)
         
-        # --- STRATEGIA 1: XMP DJI ---
         xmp = img.info.get("xmp", b"").decode("utf-8", errors="ignore")
         def _get_xmp(tag):
             m = re.search(rf'drone-dji:{tag}="([^"]+)"', xmp)
@@ -91,7 +93,6 @@ def estrai_gps_time(image_path):
             lat = float(lat_str)
             lon = float(lon_str)
 
-        # --- STRATEGIA 2: EXIF CLASSICO (Fallback) ---
         if lat is None or lon is None or utc is None:
             exif = img._getexif()
             if exif is not None:
@@ -113,8 +114,7 @@ def estrai_gps_time(image_path):
                         d, m, s = float(dms[0]), float(dms[1]), float(dms[2])
                         dec = d + m/60.0 + s/3600.0
                         return -dec if ref in ['S', 'W'] else dec
-                    except Exception:
-                        return None
+                    except Exception: return None
                 
                 if lat is None and "GPSLatitude" in gps_info:
                     lat = dms_to_decimal(gps_info["GPSLatitude"], gps_info.get("GPSLatitudeRef", "N"))
@@ -125,7 +125,6 @@ def estrai_gps_time(image_path):
 
         return lat, lon, utc
     except Exception as e:
-        print(f"  [!] Errore estrazione metadati: {e}")
         return None, None, None
 
 def get_openmeteo_tamb(lat, lon, utc_time):
@@ -147,7 +146,7 @@ def get_openmeteo_tamb(lat, lon, utc_time):
             print(f"  [+] Open-Meteo T Ambiente: {t_amb:.1f} °C")
             return float(t_amb)
     except Exception as e:
-        print(f"  [!] API Open-Meteo fallita ({e}). Uso default 25.0 °C.")
+        print(f"  [!] API Open-Meteo fallita. Uso default 25.0 °C.")
         return 25.0
 
 # ==============================================================================
@@ -220,8 +219,6 @@ def disegna_risultati_efficienza(img, det_info):
         eta_rel_pct = d.get('eta_rel_pct', None)
         class_id = d.get('class_id', 1) 
         
-        # Colore Patch basato sull'IA e sull'efficienza
-        # Se l'IA dice rotto o efficienza bassa, rosso/giallo. Altrimenti verde.
         if class_id == 0 or (eta_rel_pct is not None and eta_rel_pct < 90.0):
             color = (0, 0, 255) # Rosso
             testo_stato = "Rotto"
@@ -239,7 +236,7 @@ def disegna_risultati_efficienza(img, det_info):
             contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if contours:
                 c_big = max(contours, key=cv2.contourArea)
-                if cv2.contourArea(c_big) > 100:
+                if cv2.contourArea(c_big) >= SOGLIA_AREA_PX:
                     cv2.drawContours(canvas, [c_big], 0, color, 2)
                     M = cv2.moments(c_big)
                     tx, ty = (int(M["m10"]/M["m00"]), int(M["m01"]/M["m00"])) if M["m00"]!=0 else (c_big[0][0][0], c_big[0][0][1])
@@ -253,10 +250,8 @@ def disegna_risultati_efficienza(img, det_info):
 # ==============================================================================
 def main():
     os.makedirs(EFF_DIR, exist_ok=True)
-    
     user_params = chiedi_parametri_iniziali()
     
-    # Salva config per il file 5.py
     config_path = os.path.join(EFF_DIR, "config_analisi.json")
     with open(config_path, "w") as f:
         json.dump(user_params, f)
@@ -280,9 +275,6 @@ def main():
     from rfdetr import RFDETRSegLarge
     model = RFDETRSegLarge(pretrain_weights=WEIGHTS_PATH, num_classes=2)
 
-    # ---------------------------------------------------------
-    # FASE 1: Scansione globale (Riferimento = Pannello Sano più fresco)
-    # ---------------------------------------------------------
     print(f"\n[*] FASE 1: Analisi logica ibrida e determinazione del Riferimento...")
     memoria_analisi = [] 
     max_eta_assoluta_sani = 0.0
@@ -294,7 +286,7 @@ def main():
         img_drone = cv2.imread(path_drone)
         
         img_pil = Image.fromarray(cv2.cvtColor(img_patch, cv2.COLOR_BGR2RGB))
-        results = model.predict(img_pil, threshold=0.30)
+        results = model.predict(img_pil, threshold=0.60)
 
         if results is None or len(results.xyxy) == 0:
             memoria_analisi.append({"patch": path_patch, "img": img_patch, "dets": []})
@@ -308,13 +300,21 @@ def main():
 
         for k in range(len(results.xyxy)):
             mask = results.mask[k] if results.mask is not None else None
-            class_id = int(results.class_id[k]) # 0 = Difettoso, 1 = Sano
+            class_id = int(results.class_id[k]) 
+            
+            # FILTRO AREA GEOMETRICO
+            if mask is None: continue
+            mask_u8 = (mask.astype(np.uint8)) * 255
+            contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours: continue
+            c_big = max(contours, key=cv2.contourArea)
+            if cv2.contourArea(c_big) < SOGLIA_AREA_PX:
+                continue # E' spazzatura/tetto, salta questo poligono!
             
             eta_reale = None
             t_estratt_c = None
             
             if mask is not None and temp_matrix is not None and M_transform is not None:
-                mask_u8 = (mask.astype(np.uint8)) * 255
                 mask_warped = cv2.warpPerspective(mask_u8, M_transform, (d_w, d_h))
                 if temp_matrix.shape[:2] != (d_h, d_w):
                     temp_matrix = cv2.resize(temp_matrix, (d_w, d_h), interpolation=cv2.INTER_NEAREST)
@@ -322,16 +322,14 @@ def main():
                 pixel_termici = temp_matrix[mask_warped > 127]
                 
                 if len(pixel_termici) > 0:
-                    # LOGICA IBRIDA: MEDIA se Sano, MAX se Difettoso
                     if class_id == 1 or class_id == 2:
                         t_estratt_c = np.mean(pixel_termici)
-                    else: # class_id == 0 (Difettoso/Rotto)
+                    else:
                         t_estratt_c = np.max(pixel_termici)
                         
                     t_reale_k = applica_stefan_boltzmann(t_estratt_c, EPSILON_VETRO, t_amb)
                     eta_reale = calcola_efficienza_reale(user_params["eta_nom"], user_params["gamma"], t_reale_k)
                     
-                    # Il riferimento (100%) viene cercato SOLO tra i pannelli che l'IA ha giudicato SANI
                     if (class_id == 1 or class_id == 2) and eta_reale > max_eta_assoluta_sani:
                         max_eta_assoluta_sani = eta_reale
 
@@ -341,7 +339,6 @@ def main():
             
         memoria_analisi.append({"patch": path_patch, "img": img_patch, "dets": patch_dets})
 
-    # Se per qualche motivo assurdo l'IA non ha trovato nessun pannello "Sano", prendiamo il migliore in assoluto
     if max_eta_assoluta_sani == 0.0:
         for elemento in memoria_analisi:
             for d in elemento["dets"]:
@@ -350,9 +347,6 @@ def main():
 
     print(f"  [+] Pannello di Riferimento (100% Salute) trovato: Efficienza Assoluta {max_eta_assoluta_sani*100:.2f}%")
 
-    # ---------------------------------------------------------
-    # FASE 2: Calcolo Relativo e Generazione Output
-    # ---------------------------------------------------------
     print(f"\n[*] FASE 2: Generazione Output Annotati e Dati Grezzi...")
     csv_path = os.path.join(EFF_DIR, "dati_grezzi.csv")
     csv_fields = [
@@ -401,8 +395,7 @@ def main():
             writer.writeheader()
             writer.writerows(csv_rows)
 
-    print(f"[FINE] Analisi Completata. File salvati in: {EFF_DIR}")
+    print(f"[FINE] Analisi Completata. Lancia 5.py per mappa e report PDF!")
 
 if __name__ == "__main__":
     main()
-    
