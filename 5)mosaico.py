@@ -41,6 +41,9 @@ G_IRR_STC     = 1000.0
 COSTO_KWH     = 0.40
 GIORNI_UTIL   = 300
 
+# ---> FILTRO AREA: ~1.5 m² <---
+SOGLIA_AREA_PX = 10000 
+
 # Colori Stile A2A (in formato BGR per OpenCV)
 C_PRIMARY = (159, 91, 0)   
 C_SUCCESS = (80, 175, 76)  
@@ -308,7 +311,6 @@ def main():
         if img_patch is None: continue
         
         img_pil = Image.fromarray(cv2.cvtColor(img_patch, cv2.COLOR_BGR2RGB))
-        # SOGLIA ALZATA AL 60% COME IN 4.PY PER EVITARE FALSI POSITIVI
         results = model.predict(img_pil, threshold=0.60)
         
         if results is None or len(results.xyxy) == 0: continue
@@ -319,16 +321,16 @@ def main():
             eta_rel = eff_data[pair_name][k + 1]
             color_rgb = determina_colore_rgb(eta_rel)
             mask = results.mask[k]
+            
             if mask is None: continue
-
             mask_u8 = (mask.astype(np.uint8)) * 255
             contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if not contours: continue
             
             c_big = max(contours, key=cv2.contourArea)
             
-            # FILTRO AREA MINIMA COME IN 4.PY PER EVITARE FALSI POSITIVI
-            if cv2.contourArea(c_big) < 1500:
+            # FILTRO AREA GEOMETRICO
+            if cv2.contourArea(c_big) < SOGLIA_AREA_PX:
                 continue
 
             px_xs = c_big[:, 0, 0] + patch_col_offset
@@ -393,7 +395,7 @@ def main():
     if lat and lon:
         esh = get_pvgis_esh(lat, lon)
 
-    # CONTEGGIO EFFETTIVO BASATO SUL COLORE DEL POLIGONO
+    # CONTEGGIO EFFETTIVO BASATO SUL COLORE DEL POLIGONO SULL'ORTOMOSAICO
     tot_pannelli = len(pannelli_filtrati)
     tot_verdi = len([p for p in pannelli_filtrati if p['color'] == COLOR_VERDE])
     tot_gialli = len([p for p in pannelli_filtrati if p['color'] == COLOR_GIALLO])
