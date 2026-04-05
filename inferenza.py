@@ -13,7 +13,7 @@ os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 warnings.filterwarnings("ignore")
 
 # ==============================================================================
-# CONFIGURAZIONE PERCORSI
+# CONFIGURAZIONE
 # ==============================================================================
 CURRENT_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR           = os.path.dirname(CURRENT_SCRIPT_DIR)
@@ -23,151 +23,132 @@ INPUT_DIR     = os.path.join(BASE_DIR, "training_patches_ir")
 MOSAIC_PATH   = os.path.join(BASE_DIR, "ortomosaicoir.tif")
 OUTPUT_DIR    = os.path.join(BASE_DIR, "risultati_finali")
 
-# Mappa colori e nomi (ID 2 è Sano come scoperto prima)
+# Parametri Filtro Dimensioni (modificabili se serve)
+MIN_AREA_PX   = 800   # Area minima del pannello in pixel
+MIN_SIDE_PX   = 15    # Lunghezza minima del lato più corto
+
 COLOR_MAP = {0: (0, 0, 255), 1: (0, 200, 0), 2: (0, 200, 0)}
 NAME_MAP  = {0: "Difettoso", 1: "Sano", 2: "Sano"}
 
 # ==============================================================================
-# FUNZIONI DI ELABORAZIONE
+# FUNZIONI TECNICHE
 # ==============================================================================
+
+def calcola_iou(boxA, boxB):
+    xA, yA = max(boxA[0], boxB[0]), max(boxA[1], boxB[1])
+    xB, yB = min(boxA[2], boxB[2]) , min(boxA[3], boxB[3])
+    interArea = max(0, xB - xA + 1) * max(0, yB - yA + 1)
+    boxAArea = (boxA[2] - boxA[0] + 1) * (boxA[3] - boxA[1] + 1)
+    boxBArea = (boxB[2] - boxB[0] + 1) * (boxB[3] - boxB[1] + 1)
+    return interArea / float(boxAArea + boxBArea - interArea)
 
 def carica_mosaico(path):
-    """Carica il mosaico TIFF e lo normalizza a 8-bit BGR."""
-    print(f"[*] Caricamento mosaico: {os.path.basename(path)}...")
     img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-    if img is None:
-        print(f"ERRORE: Impossibile leggere il mosaico in {path}")
-        sys.exit(1)
-
-    # Conversione se 16-bit o float
+    if img is None: sys.exit(1)
     if img.dtype != np.uint8:
         img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    
-    # Conversione in BGR se scala di grigi
     if len(img.shape) == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    elif img.shape[2] == 4: # Rimuovi eventuale canale Alpha
+    elif img.shape[2] == 4:
         img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-        
     return img
 
-def disegna_rilevamenti(img_canvas, det_info, off_x=0, off_y=0, spessore=2):
-    """
-    Disegna i contorni reali dei pannelli.
-    Se off_x e off_y sono forniti, trasla i punti per il mosaico.
-    """
-    contatore = 0
-    for d in det_info:
-        if d['mask'] is None: continue
-        
-        mask_u8 = (d['mask'].astype(np.uint8)) * 255
-        contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if contours:
-            c_big = max(contours, key=cv2.contourArea)
-            if cv2.contourArea(c_big) > 100:
-                cid = d['class_id']
-                color = COLOR_MAP.get(cid, (255, 255, 255))
-                label = f"{NAME_MAP.get(cid, 'Sano')} {d['score']:.0%}"
-
-                # Traslazione coordinate per il mosaico globale
-                # $$x_{global} = x_{local} + offset_{x}$$
-                # $$y_{global} = y_{local} + offset_{y}$$
-                cnt_global = c_big.copy()
-                cnt_global[:, :, 0] += off_x
-                cnt_global[:, :, 1] += off_y
-
-                # Disegna il perimetro reale
-                cv2.drawContours(img_canvas, [cnt_global], 0, color, spessore)
-                
-                # Testo (centroide)
-                M = cv2.moments(cnt_global)
-                if M["m00"] != 0:
-                    tx, ty = int(M["m10"]/M["m00"]), int(M["m01"]/M["m00"])
-                    cv2.putText(img_canvas, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
-                contatore += 1
-    return contatore
-
 # ==============================================================================
-# MAIN PIPELINE
+# MAIN
 # ==============================================================================
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--threshold", type=float, default=0.30)
+    parser.add_argument("--threshold", type=float, default=0.35)
+    parser.add_argument("--min_area", type=int, default=MIN_AREA_PX)
     args = parser.parse_args()
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    patch_out_dir = os.path.join(OUTPUT_DIR, "patches_annotate")
-    os.makedirs(patch_out_dir, exist_ok=True)
 
-    # 1. Carica Mosaico e Modello
     mosaico = carica_mosaico(MOSAIC_PATH)
-    
     from rfdetr import RFDETRSegLarge
     model = RFDETRSegLarge(pretrain_weights=WEIGHTS_PATH, num_classes=2)
-    model.optimize_for_inference() # Ottimizzazione per velocità
+    model.optimize_for_inference()
 
-    # 2. Trova le patch
     files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.jpg")))
-    print(f"[*] Inizio inferenza su {len(files)} patch...")
-
-    tot_pannelli = 0
+    print(f"[*] Analisi di {len(files)} patch con filtro dimensioni...")
+    
+    rilevamenti_globali = []
 
     for path in files:
         filename = os.path.basename(path)
-        
-        # Estrai offset dal nome: tile_col_X_row_Y
         match = re.search(r"tile_col_(\d+)_row_(\d+)", filename)
         if not match: continue
-        
         off_x, off_y = int(match.group(1)), int(match.group(2))
 
-        # Leggi patch
         img_patch = cv2.imread(path)
         if img_patch is None: continue
         
-        # Inferenza
         img_pil = Image.fromarray(cv2.cvtColor(img_patch, cv2.COLOR_BGR2RGB))
         results = model.predict(img_pil, threshold=args.threshold)
 
         if results is not None and len(results.xyxy) > 0:
-            lista_det = []
             for k in range(len(results.xyxy)):
-                lista_det.append({
+                mask = results.mask[k]
+                if mask is None: continue
+                
+                mask_u8 = (mask.astype(np.uint8)) * 255
+                contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if not contours: continue
+                
+                c_local = max(contours, key=cv2.contourArea)
+                
+                # --- FILTRO DIMENSIONI ---
+                rect = cv2.minAreaRect(c_local)
+                (w_rect, h_rect) = rect[1]
+                area_rect = w_rect * h_rect
+                lato_corto = min(w_rect, h_rect)
+
+                # Se il rettangolo è troppo piccolo o troppo stretto, lo scartiamo
+                if area_rect < args.min_area or lato_corto < MIN_SIDE_PX:
+                    continue
+
+                # Calcolo punti rettangolo
+                box_local = np.int32(cv2.boxPoints(rect))
+
+                # Trasla in coordinate mosaico
+                box_global = box_local.copy()
+                box_global[:, 0] += off_x
+                box_global[:, 1] += off_y
+                
+                gx, gy, gw, gh = cv2.boundingRect(box_global)
+                rilevamenti_globali.append({
                     'class_id': int(results.class_id[k]),
                     'score': float(results.confidence[k]),
-                    'mask': results.mask[k]
+                    'poly': box_global,
+                    'bbox': [gx, gy, gx + gw, gy + gh]
                 })
 
-            # A. Disegna sulla patch singola (coordinate locali 0,0)
-            patch_annotata = img_patch.copy()
-            disegna_rilevamenti(patch_annotata, lista_det, 0, 0, spessore=2)
-            cv2.imwrite(os.path.join(patch_out_dir, f"det_{filename}"), patch_annotata)
+    # Merge (NMS)
+    rilevamenti_globali.sort(key=lambda x: x['score'], reverse=True)
+    finali = []
+    mentre_elaboro = rilevamenti_globali.copy()
 
-            # B. Disegna sul Mosaico (coordinate globali off_x, off_y)
-            n = disegna_rilevamenti(mosaico, lista_det, off_x, off_y, spessore=3)
-            tot_pannelli += n
-            
-            if n > 0:
-                print(f"   > {filename}: trovati {n} pannelli")
+    while mentre_elaboro:
+        migliore = mentre_elaboro.pop(0)
+        finali.append(migliore)
+        mentre_elaboro = [r for r in mentre_elaboro if calcola_iou(migliore['bbox'], r['bbox']) < 0.30]
 
-    # 3. Salvataggio Finale
-    print("\n[*] Salvataggio mosaico finale...")
-    mosaic_out = os.path.join(OUTPUT_DIR, "Mosaico_Annotato_Completo.jpg")
-    cv2.imwrite(mosaic_out, mosaico, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    # Disegno Finale
+    print(f"[*] Disegno di {len(finali)} pannelli validi sul mosaico...")
+    for f in finali:
+        color = COLOR_MAP.get(f['class_id'], (0, 200, 0))
+        cv2.polylines(mosaico, [f['poly']], True, color, 2, cv2.LINE_AA)
+        
+        centro = np.mean(f['poly'], axis=0).astype(int)
+        label = f"{NAME_MAP.get(f['class_id'], 'Sano')} {f['score']:.0%}"
+        cv2.putText(mosaico, label, (centro[0]-20, centro[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+
+    mosaic_out = os.path.join(OUTPUT_DIR, "Mosaico_Filtrato.jpg")
+    cv2.imwrite(mosaic_out, mosaico, [cv2.IMWRITE_JPEG_QUALITY, 95])
     
-    # Crea una preview leggera
-    h, w = mosaico.shape[:2]
-    preview = cv2.resize(mosaico, (int(w*0.2), int(h*0.2)))
-    cv2.imwrite(os.path.join(OUTPUT_DIR, "Mosaico_Preview.jpg"), preview)
-
-    print(f"\n" + "="*40)
-    print(f" FINITO!")
-    print(f" Pannelli totali rilevati: {tot_pannelli}")
-    print(f" Mosaico salvato in: {mosaic_out}")
-    print(f" Patches singole in: {patch_out_dir}")
-    print("="*40)
+    print(f"\nDONE! Pannelli scartati per dimensioni: {len(rilevamenti_globali) - len(finali) if len(rilevamenti_globali) > len(finali) else 0}")
+    print(f"Risultato salvato in: {mosaic_out}")
 
 if __name__ == "__main__":
     main()
