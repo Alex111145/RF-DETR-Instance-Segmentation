@@ -47,6 +47,25 @@ Yolo/
 
 ---
 
+## Setup SDK DJI (solo Linux)
+
+Prima di avviare la pipeline, rendi eseguibile il binario DJI e registra le librerie condivise nel sistema:
+
+```bash
+# Rendi eseguibile il tool di estrazione termica
+chmod +x /root/Yolo/sdk/linux/dji_irp
+
+# Copia le librerie .so nella directory di sistema
+sudo cp /root/Yolo/sdk/linux/*.so* /usr/lib/
+
+# Aggiorna la cache del linker
+sudo ldconfig
+```
+
+> Questi passaggi sono necessari per gli Step 3 e 4. Se non vengono eseguiti, gli script ricadono automaticamente sul parsing binario RAW (Strategia 1), che funziona per la maggior parte dei sensori DJI standard (640×512).
+
+---
+
 ## Creazione dell'Ambiente Virtuale
 
 ```bash
