@@ -7,6 +7,7 @@ import warnings
 import cv2
 import numpy as np
 import rasterio
+import shutil  # <--- Aggiunto per copiare i file senza perdite
 from rasterio.warp import transform as transform_coords
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
@@ -145,8 +146,9 @@ def main():
         p_lat, p_lon = lats[0], lons[0]
 
         best_photo_data = min(drone_db, key=lambda x: (x['lat']-p_lat)**2 + (x['lon']-p_lon)**2)
-        drone_filename = os.path.basename(best_photo_data['path'])
-        img_drone = cv2.imread(best_photo_data['path'])
+        drone_path = best_photo_data['path']
+        drone_filename = os.path.basename(drone_path)
+        img_drone = cv2.imread(drone_path)
 
         patch_res, drone_res = allinea_e_disegna(img_patch, img_drone)
 
@@ -178,20 +180,19 @@ def main():
         # ID Univoco per questo ciclo
         pair_prefix = f"pair{i+1}"
 
-        # Salvataggio della foto affiancata con il prefisso "pair" nel nome
+        # 1. Salvataggio della foto affiancata per il controllo visivo (questa viene elaborata da OpenCV)
         out_path = os.path.join(REGISTRATION_DIR, f"{pair_prefix}_{filename}")
         cv2.imwrite(out_path, final_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
         
-        # Salvataggio delle due foto separate nella cartella pair
-        cv2.imwrite(os.path.join(PAIRS_DIR, f"{pair_prefix}_patch.jpg"), patch_res, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        
-        # Usiamo img_drone (originale) invece di drone_res (che ha il rettangolo)
-        cv2.imwrite(os.path.join(PAIRS_DIR, f"{pair_prefix}_drone.jpg"), img_drone, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        # 2. Copia fisica dei file originali per preservare la risoluzione al 100%
+        # Usiamo shutil.copy per bypassare OpenCV ed evitare ricompressioni
+        shutil.copy(p_path, os.path.join(PAIRS_DIR, f"{pair_prefix}_patch.jpg"))
+        shutil.copy(drone_path, os.path.join(PAIRS_DIR, f"{pair_prefix}_drone.jpg"))
         
         print(f"[{i+1}/{len(patch_files)}] ALLINEATA: {filename} -> {drone_filename}", flush=True)
 
     print(f"\n[FINE] Risultati registrazione in: {REGISTRATION_DIR}")
-    print(f"[FINE] Coppie separate salvate in: {PAIRS_DIR}")
+    print(f"[FINE] Coppie separate (copia bit-a-bit) in: {PAIRS_DIR}")
 
 if __name__ == "__main__":
     main()
