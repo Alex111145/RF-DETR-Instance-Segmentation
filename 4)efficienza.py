@@ -12,7 +12,7 @@ import math
 import cv2
 import csv
 import numpy as np
-from PIL import Image
+from PIL import Image, ExifTags
 
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 warnings.filterwarnings("ignore")
@@ -72,21 +72,62 @@ def chiedi_parametri_iniziali():
     }
 
 def estrai_gps_time(image_path):
-    """Estrae Lat, Lon e Data/Ora dai metadati XMP della foto DJI."""
+    """Estrae Lat, Lon e Data/Ora dai metadati XMP o EXIF della foto DJI."""
+    lat, lon, utc = None, None, None
     try:
         import re
         img = Image.open(image_path)
-        xmp = img.info.get("xmp", b"").decode("utf-8", errors="ignore")
         
-        def _get(tag):
+        # --- STRATEGIA 1: XMP DJI ---
+        xmp = img.info.get("xmp", b"").decode("utf-8", errors="ignore")
+        def _get_xmp(tag):
             m = re.search(rf'drone-dji:{tag}="([^"]+)"', xmp)
             return m.group(1) if m else None
             
-        lat = float(_get("GpsLatitude"))
-        lon = float(_get("GpsLongitude"))
-        utc = _get("UTCAtExposure") # Formato: YYYY-MM-DDTHH:MM:SS
+        lat_str = _get_xmp("GpsLatitude")
+        lon_str = _get_xmp("GpsLongitude")
+        utc = _get_xmp("UTCAtExposure") # Formato: YYYY-MM-DDTHH:MM:SS
+        
+        if lat_str and lon_str:
+            lat = float(lat_str)
+            lon = float(lon_str)
+
+        # --- STRATEGIA 2: EXIF CLASSICO (Fallback) ---
+        if lat is None or lon is None or utc is None:
+            exif = img._getexif()
+            if exif is not None:
+                gps_info = {}
+                datetime_orig = None
+                
+                for tag_id, value in exif.items():
+                    tag = ExifTags.TAGS.get(tag_id, tag_id)
+                    if tag == "GPSInfo":
+                        for t in value:
+                            sub_tag = ExifTags.GPSTAGS.get(t, t)
+                            gps_info[sub_tag] = value[t]
+                    elif tag == "DateTimeOriginal":
+                        datetime_orig = value # Formato: YYYY:MM:DD HH:MM:SS
+                
+                def dms_to_decimal(dms, ref):
+                    if not dms or not ref: return None
+                    try:
+                        d, m, s = float(dms[0]), float(dms[1]), float(dms[2])
+                        dec = d + m/60.0 + s/3600.0
+                        return -dec if ref in ['S', 'W'] else dec
+                    except Exception:
+                        return None
+                
+                if lat is None and "GPSLatitude" in gps_info:
+                    lat = dms_to_decimal(gps_info["GPSLatitude"], gps_info.get("GPSLatitudeRef", "N"))
+                if lon is None and "GPSLongitude" in gps_info:
+                    lon = dms_to_decimal(gps_info["GPSLongitude"], gps_info.get("GPSLongitudeRef", "E"))
+                if utc is None and datetime_orig:
+                    # Converte YYYY:MM:DD HH:MM:SS in YYYY-MM-DDTHH:MM:SS per OpenMeteo
+                    utc = datetime_orig.replace(":", "-", 2).replace(" ", "T")
+
         return lat, lon, utc
-    except Exception:
+    except Exception as e:
+        print(f"  [!] Errore estrazione metadati: {e}")
         return None, None, None
 
 def get_openmeteo_tamb(lat, lon, utc_time):
@@ -225,7 +266,8 @@ def main():
     lat, lon, utc = estrai_gps_time(primo_drone)
     
     t_amb = 25.0
-    if lat and lon and utc:
+    if lat is not None and lon is not None and utc is not None:
+        print(f"  [+] GPS trovato: Lat {lat:.4f}, Lon {lon:.4f} | Data/Ora: {utc}")
         t_amb = get_openmeteo_tamb(lat, lon, utc)
     else:
         print("  [!] Dati GPS non trovati nel file RJPEG. Uso T Ambiente = 25.0 °C.")
