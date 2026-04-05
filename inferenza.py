@@ -1,233 +1,125 @@
 #!/usr/bin/env python3
 import os
 import sys
-import re
 import glob
+import argparse
 import warnings
 import cv2
 import numpy as np
-import rasterio
-from rasterio.warp import transform as transform_coords
 from PIL import Image
-from PIL.ExifTags import TAGS, GPSTAGS
 
-# Silenzia log di sistema superflui
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 warnings.filterwarnings("ignore")
 
 # ==============================================================================
 # CONFIGURAZIONE
 # ==============================================================================
-# Risaliamo alla root del progetto (/root/Yolo)
 CURRENT_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR           = os.path.dirname(CURRENT_SCRIPT_DIR)
 
-WEIGHTS_PATH      = os.path.join(BASE_DIR, "weights.pt")
-INPUT_DIR         = os.path.join(BASE_DIR, "training_patches_ir")
-DRONE_PHOTOS_DIR  = os.path.join(BASE_DIR, "foto_drone")
-MOSAIC_PATH       = os.path.join(BASE_DIR, "ortomosaicoir.tif")
-OUTPUT_DIR        = os.path.join(BASE_DIR, "risultati_finali")
-COMPARISON_DIR    = os.path.join(OUTPUT_DIR, "confronto_etichettato")
+WEIGHTS_PATH       = os.path.join(BASE_DIR, "weights.pt")
+INPUT_DIR          = os.path.join(BASE_DIR, "training_patches_ir")
+OUTPUT_DIR         = os.path.join(BASE_DIR, "risultati_finali")
+INFERENCE_DIR      = os.path.join(OUTPUT_DIR, "inferenza_pannelli")
 
-# Soglia confidenza per filtrare patch vuote
-MIN_CONFIDENCE = 0.45
+# Mappa colori BGR
+COLOR_MAP = {
+    0: (0, 0, 255),    # Rosso -> Difettoso
+    1: (0, 200, 0),    # Verde -> Sano (ID standard)
+    2: (0, 200, 0),    # Verde -> Sano (ID rilevato)
+}
 
-# ==============================================================================
-# FUNZIONI GPS E METADATI
-# ==============================================================================
+NAME_MAP = {
+    0: "Difettoso",
+    1: "Sano",
+    2: "Sano"
+}
 
-def get_gps_from_exif(path):
-    """Estrae Lat/Lon reali dai metadati EXIF della foto drone."""
-    try:
-        with Image.open(path) as img:
-            exif = img._getexif()
-            if not exif: return None
-            info = {}
-            for tag, value in exif.items():
-                decoded = TAGS.get(tag, tag)
-                if decoded == "GPSInfo":
-                    for t in value:
-                        sub_tag = GPSTAGS.get(t, t)
-                        info[sub_tag] = value[t]
-            
-            def to_dec(c, ref):
-                d = float(c[0]) + float(c[1])/60.0 + float(c[2])/3600.0
-                return -d if ref in ['S', 'W'] else d
-
-            return to_dec(info['GPSLatitude'], info['GPSLatitudeRef']), \
-                   to_dec(info['GPSLongitude'], info['GPSLongitudeRef'])
-    except: return None
-
-# ==============================================================================
-# FUNZIONE DI ALLINEAMENTO (COMPUTER VISION)
-# ==============================================================================
-
-def allinea_e_disegna(patch, drone_img):
-    """Trova la patch e disegna un rettangolo DRITTO sulla foto del drone."""
-    gray_p = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
-    gray_d = cv2.cvtColor(drone_img, cv2.COLOR_BGR2GRAY)
-
-    # Feature Matching con ORB
-    orb = cv2.ORB_create(3000)
-    kp1, des1 = orb.detectAndCompute(gray_p, None)
-    kp2, des2 = orb.detectAndCompute(gray_d, None)
-
-    if des1 is None or des2 is None:
-        return patch, drone_img
-
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-    matches = bf.match(des1, des2)
-    matches = sorted(matches, key=lambda x: x.distance)
-
-    if len(matches) > 15:
-        src_pts = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
-        dst_pts = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
+def disegna_rilevamento(img, det_info):
+    canvas = img.copy()
+    for d in det_info:
+        cid   = d['class_id']
+        score = d['score']
         
-        # Calcolo Omografia (trasformazione prospettica)
-        M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-        
-        if M is not None:
-            h, w = gray_p.shape
-            pts = np.float32([[0, 0], [0, h-1], [w-1, h-1], [w-1, 0]]).reshape(-1, 1, 2)
-            dst = cv2.perspectiveTransform(pts, M)
-            
-            # Calcoliamo la Bounding Box (rettangolo dritto non ruotato)
-            x, y, bw, bh = cv2.boundingRect(np.int32(dst))
-            
-            drone_annotata = drone_img.copy()
-            # Disegnamo il rettangolo dritto verde spesso
-            cv2.rectangle(drone_annotata, (x, y), (x + bw, y + bh), (0, 255, 0), 12)
-            
-            # Ritaglio della zona corrispondente per il side-by-side
-            # Nota: qui ritagliamo la zona prospetticamente corretta per la parte sx
-            # ma disegnamo il rect dritto per la parte dx (come richiesto)
-            y1, y2 = max(0, y), min(drone_img.shape[0], y+bh)
-            x1, x2 = max(0, x), min(drone_img.shape[1], x+bw)
-            patch_aligned = drone_img[y1:y2, x1:x2]
-            
-            if patch_aligned.size > 0:
-                return patch_aligned, drone_annotata
-            
-    return patch, drone_img
+        class_name = NAME_MAP.get(cid, f"ID:{cid}")
+        color      = COLOR_MAP.get(cid, (255, 255, 255))
+        label      = f"{class_name} {score:.0%}"
 
-# ==============================================================================
-# MAIN PIPELINE
-# ==============================================================================
+        if d['mask'] is not None:
+            # Convertiamo la maschera booleana in immagine 8-bit
+            mask_u8 = (d['mask'].astype(np.uint8)) * 255
+            
+            # Troviamo il contorno esatto della maschera
+            contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if contours:
+                # Prendiamo il contorno più grande
+                c_big = max(contours, key=cv2.contourArea)
+                
+                # Filtro area minima per evitare rumore
+                if cv2.contourArea(c_big) > 100:
+                    # DISEGNO DEL PERIMETRO REALE (non rettangolare se tagliato)
+                    cv2.drawContours(canvas, [c_big], 0, color, 2)
+                    
+                    # Calcolo posizione etichetta (centroide)
+                    M = cv2.moments(c_big)
+                    if M["m00"] != 0:
+                        tx = int(M["m10"] / M["m00"])
+                        ty = int(M["m01"] / M["m00"])
+                    else:
+                        # Fallback se il momento è zero (contorno molto sottile)
+                        tx, ty = c_big[0][0][0], c_big[0][0][1]
+                    
+                    cv2.putText(canvas, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+        else:
+            # Se non c'è maschera, usa il classico rettangolo XYXY
+            x1, y1, x2, y2 = d['xyxy']
+            cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(canvas, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+            
+    return canvas
 
 def main():
-    os.makedirs(COMPARISON_DIR, exist_ok=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", default=INPUT_DIR)
+    parser.add_argument("--output", default=INFERENCE_DIR)
+    parser.add_argument("--threshold", type=float, default=0.30)
+    args = parser.parse_args()
 
-    # 1. Carica Modello IA per filtraggio patch
-    print("[*] Caricamento modello IA...", flush=True)
-    from rfdetr import RFDETRSegLarge
-    model = RFDETRSegLarge(pretrain_weights=WEIGHTS_PATH, num_classes=2)
-    model.optimize_for_inference()
-
-    # 2. Carica Metadati Geografici Mosaico
-    print(f"[*] Lettura CRS Mosaico: {os.path.basename(MOSAIC_PATH)}...", flush=True)
-    with rasterio.open(MOSAIC_PATH) as src:
-        mosaic_transform = src.transform
-        mosaic_crs = src.crs
-
-    # 3. Indicizza foto drone (GPS)
-    drone_photos = glob.glob(os.path.join(DRONE_PHOTOS_DIR, "*.[jJ][pP][gG]"))
-    drone_db = []
-    print("[*] Indicizzazione GPS foto drone...", flush=True)
-    for p in drone_photos:
-        coords = get_gps_from_exif(p)
-        if coords: drone_db.append({'path': p, 'lat': coords[0], 'lon': coords[1]})
-    
-    if not drone_db:
-        print("ERRORE: Nessuna foto con GPS trovata in foto_drone!")
+    if not os.path.exists(args.input):
+        print(f"ERRORE: Cartella {args.input} non trovata.")
         return
 
-    # 4. Elaborazione Patch
-    patch_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.jpg")))
-    print(f"[*] Analisi di {len(patch_files)} patch. Verranno salvate solo quelle con pannelli...", flush=True)
+    os.makedirs(args.output, exist_ok=True)
+    
+    from rfdetr import RFDETRSegLarge
+    model = RFDETRSegLarge(pretrain_weights=WEIGHTS_PATH, num_classes=2)
 
-    # Parametri grafici header/testo
-    HEADER_H = 70
-    FONT = cv2.FONT_HERSHEY_SIMPLEX
-    FONT_SCALE = 0.8
-    FONT_COLOR = (0, 255, 0) # Verde
-    FONT_THICKNESS = 2
+    files = sorted(glob.glob(os.path.join(args.input, "*.jpg")))
+    print(f"[*] Elaborazione di {len(files)} patch...")
 
-    for i, p_path in enumerate(patch_files):
-        filename = os.path.basename(p_path)
-        img_patch = cv2.imread(p_path)
-        if img_patch is None: continue
-
-        # --- FILTRO IA ---
-        img_pil = Image.fromarray(cv2.cvtColor(img_patch, cv2.COLOR_BGR2RGB))
-        results = model.predict(img_pil, threshold=MIN_CONFIDENCE)
-
-        if results is None or len(results.xyxy) == 0:
-            continue # Salta se l'IA non vede pannelli
-
-        # --- RICERCA GEOGRAFICA ---
-        m = re.search(r"tile_col_(\d+)_row_(\d+)", filename)
-        if not m: continue
+    for i, path in enumerate(files):
+        img_bgr = cv2.imread(path)
+        if img_bgr is None: continue
         
-        # Centro patch in pixel
-        px_x, px_y = int(m.group(1)) + 320, int(m.group(2)) + 320
-        east, north = mosaic_transform * (px_x, px_y)
-        
-        # Conversione CRS -> GPS (WGS84)
-        lons, lats = transform_coords(mosaic_crs, 'EPSG:4326', [east], [north])
-        p_lat, p_lon = lats[0], lons[0]
+        img_pil = Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+        results = model.predict(img_pil, threshold=args.threshold)
 
-        # Trova la foto drone più vicina
-        best_photo_data = min(drone_db, key=lambda x: (x['lat']-p_lat)**2 + (x['lon']-p_lon)**2)
-        drone_filename = os.path.basename(best_photo_data['path'])
-        img_drone = cv2.imread(best_photo_data['path'])
+        lista_det = []
+        if results is not None and len(results.xyxy) > 0:
+            for k in range(len(results.xyxy)):
+                lista_det.append({
+                    'class_id': int(results.class_id[k]),
+                    'score': float(results.confidence[k]),
+                    'xyxy': results.xyxy[k].astype(int),
+                    'mask': results.mask[k] if results.mask is not None else None
+                })
 
-        # --- ALLINEAMENTO ---
-        # patch_res (ritaglio prospettico raddrizzato a sx), drone_res (originale con rect dritto a dx)
-        patch_res, drone_res = allinea_e_disegna(img_patch, img_drone)
+        if lista_det:
+            annotata = disegna_rilevamento(img_bgr, lista_det)
+            cv2.imwrite(os.path.join(args.output, f"det_{os.path.basename(path)}"), annotata)
 
-        # Creazione Contenuto Side-by-Side (H=800px)
-        H_CONTENT = 800
-        p_h, p_w = patch_res.shape[:2]
-        d_h, d_w = drone_res.shape[:2]
-        
-        # Resize proporzionale contenuto
-        p_resized = cv2.resize(patch_res, (int(p_w * (H_CONTENT / p_h)), H_CONTENT))
-        d_resized = cv2.resize(drone_res, (int(d_w * (H_CONTENT / d_h)), H_CONTENT))
-
-        # Content stacked
-        combined_content = np.hstack((p_resized, d_resized))
-        c_h, c_w = combined_content.shape[:2]
-
-        # --- CREAZIONE HEADER ETICHETTATO ---
-        header_canvas = np.zeros((HEADER_H, c_w, 3), dtype=np.uint8)
-        header_canvas[:] = (0, 0, 0) # Sfondo nero per l'header
-
-        # Testo Sx (Nome Patch)
-        text_sx = f"Patch: {filename}"
-        # Testo Dx (Nome Drone)
-        text_dx = f"Drone: {drone_filename}"
-
-        # Calcolo posizioni per allineamento
-        y_text = int(HEADER_H * 0.7) # Posizione verticale linea di base
-        
-        # Allineamento SX (fisso a 10px dal bordo)
-        cv2.putText(header_canvas, text_sx, (10, y_text), FONT, FONT_SCALE, FONT_COLOR, FONT_THICKNESS, cv2.LINE_AA)
-
-        # Allineamento DX (calcoliamo la larghezza del testo per farlo finire vicino al bordo dx)
-        (tw_dx, _), _ = cv2.getTextSize(text_dx, FONT, FONT_SCALE, FONT_THICKNESS)
-        x_dx = c_w - tw_dx - 10 # 10px di margine dal bordo destro
-        cv2.putText(header_canvas, text_dx, (x_dx, y_text), FONT, FONT_SCALE, FONT_COLOR, FONT_THICKNESS, cv2.LINE_AA)
-
-        # --- UNIONE FINALE (HEADER + CONTENUTO) ---
-        final_image = np.vstack((header_canvas, combined_content))
-
-        # Salvataggio
-        out_path = os.path.join(COMPARISON_DIR, f"detection_labeled_{filename}")
-        cv2.imwrite(out_path, final_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        
-        print(f"[{i+1}/{len(patch_files)}] PANNELLO TROVATO: {filename} -> {drone_filename}", flush=True)
-
-    print(f"\n[FINE] Risultati etichettati in: {COMPARISON_DIR}")
+    print(f"\n[FINE] Fatto! Ora i perimetri seguono esattamente la maschera rilevata. Salvati in: {args.output}")
 
 if __name__ == "__main__":
     main()
