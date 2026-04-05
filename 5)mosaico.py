@@ -26,11 +26,10 @@ PATCH_IR_DIR       = os.path.join(BASE_DIR, "training_patches_ir")
 CSV_PATH           = os.path.join(OUTPUT_DIR, "efficienza_risultati", "report_efficienza.csv")
 MAPPA_OUT_PATH     = os.path.join(OUTPUT_DIR, "mappa_efficienza_rgb.tif")
 
-# Trova i mosaici (gestisce piccole variazioni di nome)
 IR_MOSAIC  = os.path.join(BASE_DIR, "ortomosaicoir.tif")
 RGB_MOSAIC = os.path.join(BASE_DIR, "ortomosaicorgb.tif")
 if not os.path.exists(RGB_MOSAIC): 
-    RGB_MOSAIC = os.path.join(BASE_DIR, "ortomosaiccrgb.tif") # Fallback typo
+    RGB_MOSAIC = os.path.join(BASE_DIR, "ortomosaiccrgb.tif")
 
 # ==============================================================================
 # FUNZIONI DI UTILITA'
@@ -63,26 +62,31 @@ def mappa_pair_a_originale(patch_ir_dir):
     return mapping
 
 def determina_colore_rgb(eta_rel_pct):
-    if eta_rel_pct >= 98.0:
+    """
+    LOGICA AGGIORNATA:
+    - Verde: >= 90%
+    - Giallo: < 90% (e >= 80%)
+    - Rosso (Rotto): < 80%
+    """
+    if eta_rel_pct >= 90.0:
         return (0, 255, 0)       # Verde (Sano)
-    elif eta_rel_pct >= 94.0:
-        return (255, 200, 0)     # Giallo (Leggero degrado/Soiling)
+    elif eta_rel_pct >= 80.0:
+        return (255, 200, 0)     # Giallo (Sotto 90)
     else:
-        return (255, 0, 0)       # Rosso (Hotspot severo)
+        return (255, 0, 0)       # Rosso (Rotto - Sotto 80)
 
 # ==============================================================================
 # MAIN PIPELINE
 # ==============================================================================
 def main():
     print("\n" + "="*60)
-    print("  GENERAZIONE DIGITAL TWIN: PROIEZIONE PANNELLI SU RGB")
+    print("  GENERAZIONE DIGITAL TWIN: LOGICA COLORI 90/80")
     print("="*60)
 
     if not os.path.exists(IR_MOSAIC) or not os.path.exists(RGB_MOSAIC):
-        print("[!] ERRORE: Mosaico IR o RGB non trovato nella cartella Yolo.")
+        print("[!] ERRORE: Mosaico IR o RGB non trovato.")
         return
 
-    # 1. Carica Modello AI e Dati
     from rfdetr import RFDETRSegLarge
     print("[*] Caricamento modello IA...")
     model = RFDETRSegLarge(pretrain_weights=WEIGHTS_PATH, num_classes=2)
@@ -90,29 +94,24 @@ def main():
     eff_data = carica_report_csv(CSV_PATH)
     mappa_orig = mappa_pair_a_originale(PATCH_IR_DIR)
 
-    # 2. Lettura Mosaici con Rasterio
-    print("[*] Lettura Coordinate Spaziali Mosaico Termico (IR)...")
+    print("[*] Apertura mosaici...")
     src_ir = rasterio.open(IR_MOSAIC)
     ir_transform = src_ir.transform
     ir_crs = src_ir.crs
 
-    print("[*] Caricamento in RAM Mosaico Visivo (RGB)... (Potrebbe richiedere memoria)")
     src_rgb = rasterio.open(RGB_MOSAIC)
     rgb_transform = src_rgb.transform
     rgb_crs = src_rgb.crs
-    
-    # FIX Salvataggio: Forziamo 3 bande per evitare l'errore del canale Alpha
     rgb_profile = src_rgb.profile.copy()
     rgb_profile.update(count=3)
 
     rgb_img_data = src_rgb.read([1, 2, 3]) 
     rgb_canvas = np.transpose(rgb_img_data, (1, 2, 0)).copy()
 
-    # 3. Processamento Patch e Accumulo (Senza disegnare subito)
     pair_files = list(eff_data.keys())
-    print(f"[*] Proiezione virtuale di {len(pair_files)} aree...")
+    pannelli_globali = [] 
 
-    pannelli_globali = [] # Lista per raccogliere tutti i pannelli e filtrare i duplicati
+    print(f"[*] Elaborazione di {len(pair_files)} patch...")
 
     for i, pair_name in enumerate(pair_files):
         orig_path = mappa_orig.get(pair_name)
@@ -120,8 +119,7 @@ def main():
         
         m = re.search(r"tile_col_(\d+)_row_(\d+)", os.path.basename(orig_path))
         if not m: continue
-        patch_col_offset = int(m.group(1))
-        patch_row_offset = int(m.group(2))
+        patch_col_offset, patch_row_offset = int(m.group(1)), int(m.group(2))
 
         patch_path = os.path.join(OUTPUT_DIR, "pair", pair_name)
         img_patch = cv2.imread(patch_path)
@@ -145,7 +143,6 @@ def main():
             if not contours: continue
             
             c_big = max(contours, key=cv2.contourArea)
-            
             px_xs = c_big[:, 0, 0] + patch_col_offset
             px_ys = c_big[:, 0, 1] + patch_row_offset
             
@@ -155,79 +152,49 @@ def main():
             
             mapped_contour = np.array([list(zip(cols_rgb, rows_rgb))], dtype=np.int32)
             
-            # Calcolo Area e Centroide del poligono proiettato
             area_globale = cv2.contourArea(mapped_contour)
             M = cv2.moments(mapped_contour)
             if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
+                cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
             else:
                 x, y, w, h = cv2.boundingRect(mapped_contour)
                 cx, cy = x + w//2, y + h//2
             
-            # Salviamo il pannello nella lista invece di disegnarlo
             pannelli_globali.append({
-                'contour': mapped_contour,
-                'centroid': (cx, cy),
-                'area': area_globale,
-                'eta': eta_rel,
-                'color': color_rgb
+                'contour': mapped_contour, 'centroid': (cx, cy),
+                'area': area_globale, 'eta': eta_rel, 'color': color_rgb
             })
 
-    # ==========================================================
-    # 4. FILTRO ANTI-DUPLICATI (Global NMS per Poligoni)
-    # ==========================================================
-    print(f"[*] Pulizia sovrapposizioni: Trovati {len(pannelli_globali)} pannelli grezzi.")
-    
-    # Ordiniamo dal più grande al più piccolo (diamo priorità ai pannelli completi)
+    # Filtro NMS per evitare sovrapposizioni
     pannelli_globali.sort(key=lambda p: p['area'], reverse=True)
-    
     pannelli_filtrati = []
-    
     for nuovo_pan in pannelli_globali:
         duplicato = False
         cx, cy = nuovo_pan['centroid']
-        
         for pan_salvato in pannelli_filtrati:
-            # Se il centroide del nuovo pannello cade dentro il perimetro di uno già salvato, è un duplicato!
             if cv2.pointPolygonTest(pan_salvato['contour'], (cx, cy), measureDist=False) >= 0:
                 duplicato = True
                 break
-                
         if not duplicato:
             pannelli_filtrati.append(nuovo_pan)
 
-    print(f"  [✓] Pulizia completata! Pannelli unici reali da disegnare: {len(pannelli_filtrati)}")
-
-    # 5. DISEGNO FINALE
+    # Disegno Finale
     for pan in pannelli_filtrati:
-        contour = pan['contour']
-        color = pan['color']
-        eta_rel = pan['eta']
+        cv2.drawContours(rgb_canvas, pan['contour'], -1, pan['color'], 4)
+        label = f"{pan['eta']:.1f}%"
+        x, y, w, h = cv2.boundingRect(pan['contour'])
         cx, cy = pan['centroid']
-        
-        cv2.drawContours(rgb_canvas, contour, -1, color, 4)
-        
-        x, y, w, h = cv2.boundingRect(contour)
-        label = f"{eta_rel:.1f}%"
-        font_scale = max(0.8, w / 150.0) 
-        thickness = max(2, int(font_scale * 2))
-        
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-        
+        font_scale = max(0.7, w / 180.0) 
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 2)
         cv2.rectangle(rgb_canvas, (cx - tw//2 - 5, cy - th - 5), (cx + tw//2 + 5, cy + 5), (0, 0, 0), -1)
-        cv2.putText(rgb_canvas, label, (cx - tw//2, cy), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness, cv2.LINE_AA)
+        cv2.putText(rgb_canvas, label, (cx - tw//2, cy), cv2.FONT_HERSHEY_SIMPLEX, font_scale, pan['color'], 2, cv2.LINE_AA)
 
-    # 6. Salvataggio Mappa GeoTIFF
-    print(f"\n[*] Salvataggio della mappa vettoriale georeferenziata...")
+    print(f"[*] Salvataggio in corso...")
     out_img_chw = np.transpose(rgb_canvas, (2, 0, 1))
-    
     with rasterio.open(MAPPA_OUT_PATH, 'w', **rgb_profile) as dst:
         dst.write(out_img_chw)
 
-    print(f"[FINE] Mappa completata con successo senza sovrapposizioni!")
-    print(f"[+] File salvato in: {MAPPA_OUT_PATH}")
-    print("="*60 + "\n")
+    print(f"[FINE] Mappa generata: {MAPPA_OUT_PATH}")
 
 if __name__ == "__main__":
     main()
