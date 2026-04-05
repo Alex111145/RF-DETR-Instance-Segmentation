@@ -40,13 +40,15 @@ MAPPA_PANNELLI = {
 EPSILON_VETRO = 0.90
 G_IRR_STC     = 1000.0
 T_STC_K       = 298.15
+COSTO_KWH     = 0.40
+GIORNI_UTIL   = 300
 
 # ==============================================================================
 # INTERFACCIA UTENTE (CLI) E API
 # ==============================================================================
 def chiedi_parametri_iniziali():
     print("\n" + "="*60)
-    print("  CONFIGURAZIONE ANALISI TERMODINAMICA PV (PANNELLI SANI)")
+    print("  CONFIGURAZIONE ANALISI TERMODINAMICA PV (PANNELLI DANNEGGIATI)")
     print("="*60)
     print("\n  Tecnologia pannello:")
     print("    1) Monocristallino  (η=20.0%, γ=-0.37%/°C)")
@@ -72,13 +74,10 @@ def chiedi_parametri_iniziali():
     }
 
 def estrai_gps_time(image_path):
-    """Estrae Lat, Lon e Data/Ora dai metadati XMP o EXIF della foto DJI."""
     lat, lon, utc = None, None, None
     try:
         import re
         img = Image.open(image_path)
-        
-        # --- STRATEGIA 1: XMP DJI ---
         xmp = img.info.get("xmp", b"").decode("utf-8", errors="ignore")
         def _get_xmp(tag):
             m = re.search(rf'drone-dji:{tag}="([^"]+)"', xmp)
@@ -86,19 +85,17 @@ def estrai_gps_time(image_path):
             
         lat_str = _get_xmp("GpsLatitude")
         lon_str = _get_xmp("GpsLongitude")
-        utc = _get_xmp("UTCAtExposure") # Formato: YYYY-MM-DDTHH:MM:SS
+        utc = _get_xmp("UTCAtExposure") 
         
         if lat_str and lon_str:
             lat = float(lat_str)
             lon = float(lon_str)
 
-        # --- STRATEGIA 2: EXIF CLASSICO (Fallback) ---
         if lat is None or lon is None or utc is None:
             exif = img._getexif()
             if exif is not None:
                 gps_info = {}
                 datetime_orig = None
-                
                 for tag_id, value in exif.items():
                     tag = ExifTags.TAGS.get(tag_id, tag_id)
                     if tag == "GPSInfo":
@@ -106,7 +103,7 @@ def estrai_gps_time(image_path):
                             sub_tag = ExifTags.GPSTAGS.get(t, t)
                             gps_info[sub_tag] = value[t]
                     elif tag == "DateTimeOriginal":
-                        datetime_orig = value # Formato: YYYY:MM:DD HH:MM:SS
+                        datetime_orig = value 
                 
                 def dms_to_decimal(dms, ref):
                     if not dms or not ref: return None
@@ -114,29 +111,39 @@ def estrai_gps_time(image_path):
                         d, m, s = float(dms[0]), float(dms[1]), float(dms[2])
                         dec = d + m/60.0 + s/3600.0
                         return -dec if ref in ['S', 'W'] else dec
-                    except Exception:
-                        return None
+                    except Exception: return None
                 
                 if lat is None and "GPSLatitude" in gps_info:
                     lat = dms_to_decimal(gps_info["GPSLatitude"], gps_info.get("GPSLatitudeRef", "N"))
                 if lon is None and "GPSLongitude" in gps_info:
                     lon = dms_to_decimal(gps_info["GPSLongitude"], gps_info.get("GPSLongitudeRef", "E"))
                 if utc is None and datetime_orig:
-                    # Converte YYYY:MM:DD HH:MM:SS in YYYY-MM-DDTHH:MM:SS per OpenMeteo
                     utc = datetime_orig.replace(":", "-", 2).replace(" ", "T")
 
         return lat, lon, utc
-    except Exception as e:
-        print(f"  [!] Errore estrazione metadati: {e}")
+    except Exception:
         return None, None, None
 
+def get_pvgis_esh(lat, lon):
+    try:
+        print(f"[*] Interrogazione PVGIS per coordinate ({lat:.4f}, {lon:.4f})...")
+        url = f"https://re.jrc.ec.europa.eu/api/v5_2/PVcalc?lat={lat}&lon={lon}&peakpower=1&loss=14&outputformat=json"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            e_annua = data["outputs"]["totals"]["fixed"]["E_y"]
+            esh = e_annua / 365.0
+            print(f"  [+] PVGIS ESH medio giornaliero: {esh:.2f} ore")
+            return esh
+    except Exception as e:
+        print(f"  [!] API PVGIS fallita ({e}). Uso default 3.18 ore.")
+        return 3.18
+
 def get_openmeteo_tamb(lat, lon, utc_time):
-    """Interroga OpenMeteo per la T ambiente all'ora esatta del volo."""
     try:
         dt_part = utc_time[:19]
         date = dt_part[:10]
         hour = int(dt_part[11:13])
-        
         print(f"[*] Interrogazione Open-Meteo per data {date} ore {hour} UTC...")
         params = urllib.parse.urlencode({
             "latitude": round(lat, 4), "longitude": round(lon, 4),
@@ -225,13 +232,17 @@ def disegna_risultati_efficienza(img, det_info):
     for d in det_info:
         eta_rel_pct = d.get('eta_rel_pct', None)
         
-        # Colore sempre Verde per i pannelli sani
-        color = (0, 255, 0)
-        
+        # Colore Giallo/Rosso in base alle soglie per pannelli danneggiati
         if eta_rel_pct is not None:
-            label = f"SoH: {eta_rel_pct:.1f}%"
+            if eta_rel_pct >= 80.0:
+                color = (0, 200, 255) # Giallo (BGR)
+            else:
+                color = (0, 0, 255)   # Rosso
+                
+            label = f"Rotto | Eff: {eta_rel_pct:.1f}%"
         else:
-            label = "SoH: N/A"
+            color = (128, 128, 128)
+            label = "Rotto | Eff: N/A"
 
         if d['mask'] is not None:
             mask_u8 = (d['mask'].astype(np.uint8)) * 255
@@ -260,24 +271,26 @@ def main():
         print("[!] Nessuna patch trovata.")
         return
 
-    # Estrazione Meteo (Dalla primissima foto drone)
+    # Estrazione Meteo ed ESH
     print("[*] Estrazione metadati climatici (GPS/Time)...")
     primo_drone = patch_files[0].replace("_patch.jpg", "_drone.jpg")
     lat, lon, utc = estrai_gps_time(primo_drone)
     
     t_amb = 25.0
+    esh = 3.18
     if lat is not None and lon is not None and utc is not None:
         print(f"  [+] GPS trovato: Lat {lat:.4f}, Lon {lon:.4f} | Data/Ora: {utc}")
         t_amb = get_openmeteo_tamb(lat, lon, utc)
+        esh = get_pvgis_esh(lat, lon)
     else:
-        print("  [!] Dati GPS non trovati nel file RJPEG. Uso T Ambiente = 25.0 °C.")
+        print("  [!] Dati GPS non trovati nel file RJPEG. Uso default.")
 
     # Caricamento AI
     from rfdetr import RFDETRSegLarge
     model = RFDETRSegLarge(pretrain_weights=WEIGHTS_PATH, num_classes=2)
 
     # ---------------------------------------------------------
-    # FASE 1: Scansione globale per trovare il "100% Efficienza"
+    # FASE 1: Scansione globale (Riferimento = Pannello Sano / T.Media più bassa)
     # ---------------------------------------------------------
     print(f"\n[*] FASE 1: Analisi globale per stabilire il Pannello di Riferimento...")
     memoria_analisi = [] 
@@ -304,7 +317,7 @@ def main():
 
         for k in range(len(results.xyxy)):
             mask = results.mask[k] if results.mask is not None else None
-            eta_reale = None
+            eta_reale_max = None
             
             if mask is not None and temp_matrix is not None and M_transform is not None:
                 mask_u8 = (mask.astype(np.uint8)) * 255
@@ -315,15 +328,22 @@ def main():
                 pixel_termici = temp_matrix[mask_warped > 127]
                 
                 if len(pixel_termici) > 0:
+                    # Calcola il riferimento sull'intero impianto usando la media per scartare gli hotspot
                     t_media_c = np.mean(pixel_termici)
-                    t_reale_k = applica_stefan_boltzmann(t_media_c, EPSILON_VETRO, t_amb)
-                    eta_reale = calcola_efficienza_reale(user_params["eta_nom"], user_params["gamma"], t_reale_k)
+                    t_reale_k_media = applica_stefan_boltzmann(t_media_c, EPSILON_VETRO, t_amb)
+                    eta_reale_media = calcola_efficienza_reale(user_params["eta_nom"], user_params["gamma"], t_reale_k_media)
                     
-                    if eta_reale > max_eta_assoluta:
-                        max_eta_assoluta = eta_reale
+                    if eta_reale_media > max_eta_assoluta:
+                        max_eta_assoluta = eta_reale_media
+                        
+                    # Calcola l'efficienza del singolo pannello danneggiato usando la T. MAX
+                    t_max_c = np.max(pixel_termici)
+                    t_reale_k_max = applica_stefan_boltzmann(t_max_c, EPSILON_VETRO, t_amb)
+                    eta_reale_max = calcola_efficienza_reale(user_params["eta_nom"], user_params["gamma"], t_reale_k_max)
 
             patch_dets.append({
-                'class_id': int(results.class_id[k]), 'mask': mask, 'eta_reale': eta_reale
+                'class_id': int(results.class_id[k]), 'mask': mask, 'eta_reale': eta_reale_max,
+                't_max': t_max_c if 't_max_c' in locals() else None
             })
             
         memoria_analisi.append({"patch": path_patch, "img": img_patch, "dets": patch_dets})
@@ -331,13 +351,13 @@ def main():
     print(f"  [+] Pannello di Riferimento (100% Salute) trovato: Efficienza Assoluta {max_eta_assoluta*100:.2f}%")
 
     # ---------------------------------------------------------
-    # FASE 2: Calcolo Relativo e Generazione Output
+    # FASE 2: Calcolo Relativo, Economico e Generazione Output
     # ---------------------------------------------------------
-    print(f"\n[*] FASE 2: Generazione Output Annotati...")
+    print(f"\n[*] FASE 2: Generazione Output Annotati e Report Economico...")
     csv_path = os.path.join(EFF_DIR, "report_efficienza.csv")
     csv_fields = [
-        "File_Patch", "ID_Pannello", "Eta_Assoluta_pct", "Salute_Relativa_pct", 
-        "Potenza_Erogata_W"
+        "File_Patch", "ID_Pannello", "T_Max_Apparente_C", "Eta_Assoluta_pct", 
+        "Salute_Relativa_pct", "Potenza_Erogata_W", "Potenza_Persa_W", "Mancato_Guadagno_EUR_Anno"
     ]
     csv_rows = []
 
@@ -350,15 +370,28 @@ def main():
         for k, d in enumerate(dets):
             eta_reale = d['eta_reale']
             eta_rel_pct = None
+            loss_euro = 0.0
             
             if eta_reale is not None:
+                # Efficienza relativa basata sul picco termico vs Pannello migliore
                 eta_rel_pct = (eta_reale / max_eta_assoluta) * 100.0 if max_eta_assoluta > 0 else 0.0
+                
+                # Calcolo Economico
+                p_riferimento_w = G_IRR_STC * user_params["area"] * max_eta_assoluta
                 p_attuale_w = G_IRR_STC * user_params["area"] * eta_reale
+                
+                p_persa_w = p_riferimento_w - p_attuale_w
+                if p_persa_w < 0: p_persa_w = 0.0
+                
+                e_persa_kwh = (p_persa_w * esh) / 1000.0
+                loss_euro = e_persa_kwh * GIORNI_UTIL * COSTO_KWH
                 
                 csv_rows.append({
                     "File_Patch": os.path.basename(path_patch), "ID_Pannello": k + 1,
+                    "T_Max_Apparente_C": round(d['t_max'], 2) if d['t_max'] else 0.0,
                     "Eta_Assoluta_pct": round(eta_reale * 100, 2), "Salute_Relativa_pct": round(eta_rel_pct, 2),
-                    "Potenza_Erogata_W": round(p_attuale_w, 2)
+                    "Potenza_Erogata_W": round(p_attuale_w, 2), "Potenza_Persa_W": round(p_persa_w, 2),
+                    "Mancato_Guadagno_EUR_Anno": round(loss_euro, 2)
                 })
 
             lista_draw.append({
