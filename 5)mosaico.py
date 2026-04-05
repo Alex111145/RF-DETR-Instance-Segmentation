@@ -63,24 +63,22 @@ def mappa_pair_a_originale(patch_ir_dir):
 
 def determina_colore_rgb(eta_rel_pct):
     """
-    LOGICA AGGIORNATA:
-    - Verde: >= 90%
-    - Giallo: < 90% (e >= 80%)
-    - Rosso (Rotto): < 80%
+    LOGICA AGGIORNATA PER PANNELLI DANNEGGIATI:
+    - Giallo: >= 80% (ma sotto il 90%)
+    - Rosso: < 80%
+    Nota: Essendo un dataset di pannelli danneggiati, il verde viene escluso per evidenziare il guasto.
     """
-    if eta_rel_pct >= 90.0:
-        return (0, 255, 0)       # Verde (Sano)
-    elif eta_rel_pct >= 80.0:
-        return (255, 200, 0)     # Giallo (Sotto 90)
+    if eta_rel_pct >= 80.0:
+        return (0, 200, 255)     # Giallo BGR
     else:
-        return (255, 0, 0)       # Rosso (Rotto - Sotto 80)
+        return (0, 0, 255)       # Rosso BGR
 
 # ==============================================================================
 # MAIN PIPELINE
 # ==============================================================================
 def main():
     print("\n" + "="*60)
-    print("  GENERAZIONE DIGITAL TWIN: LOGICA COLORI 90/80")
+    print("  GENERAZIONE DIGITAL TWIN: LOGICA COLORI DANNEGGIATI")
     print("="*60)
 
     if not os.path.exists(IR_MOSAIC) or not os.path.exists(RGB_MOSAIC):
@@ -165,7 +163,7 @@ def main():
                 'area': area_globale, 'eta': eta_rel, 'color': color_rgb
             })
 
-    # Filtro NMS per evitare sovrapposizioni
+    # Filtro NMS
     pannelli_globali.sort(key=lambda p: p['area'], reverse=True)
     pannelli_filtrati = []
     for nuovo_pan in pannelli_globali:
