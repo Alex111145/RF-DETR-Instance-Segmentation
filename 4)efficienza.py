@@ -42,7 +42,7 @@ G_IRR_STC     = 1000.0
 T_STC_K       = 298.15
 
 # ---> FILTRO AREA: ~1.5 m² <---
-SOGLIA_AREA_PX = 6000 
+SOGLIA_AREA_PX = 10000 
 
 # ==============================================================================
 # INTERFACCIA UTENTE E API
