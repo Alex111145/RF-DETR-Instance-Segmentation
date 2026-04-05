@@ -10,11 +10,12 @@ Utilizza un modello AI di segmentazione (RF-DETR) per identificare i pannelli e 
 ```
 Yolo/
 ├── inferenza/
-│   ├── 1.py                  # Step 1: Allineamento patch IR ↔ foto drone
-│   ├── 2.py                  # Step 2: Inferenza AI (rilevamento pannelli)
-│   ├── 3.py                  # Step 3: Analisi termica per pannello
-│   ├── 4.py                  # Step 4: Calcolo efficienza termodinamica
-│   └── 5.py                  # Step 5: Digital Twin + Report PDF + Mappa GeoTIFF
+│   ├── Step_0_patch.py           # Step 0: Taglio ortomosaico IR in patch 640×640
+│   ├── Step_1_registrazione.py   # Step 1: Allineamento patch IR ↔ foto drone
+│   ├── Step_2_Inferenza.py       # Step 2: Inferenza AI (rilevamento pannelli)
+│   ├── Step3_Temperatura.py      # Step 3: Analisi termica per pannello
+│   ├── Step_4_Efficienza.py      # Step 4: Calcolo efficienza termodinamica
+│   └── Step_5_Mosaico.py         # Step 5: Digital Twin + Report PDF + Mappa GeoTIFF
 ├── foto_drone/               # Foto RJPEG del drone DJI (IR + dati GPS)
 ├── training_patches_ir/      # Tile 512×512 estratte dall'ortomosaico IR
 ├── ortomosaicoir.tif         # Ortomosaico infrarosso georeferenziato
@@ -114,9 +115,35 @@ Gli script vanno eseguiti **in sequenza** dalla cartella `inferenza/`:
 cd Yolo/inferenza
 ```
 
+### Step 0 — Taglio Ortomosaico IR in Patch
+```bash
+# Con GUI (selezione area interattiva a 4 punti con il mouse)
+python Step_0_patch.py --input ../ortomosaicoir.tif --output ../training_patches_ir
+
+# Senza GUI (taglia tutto il mosaico automaticamente)
+python Step_0_patch.py --input ../ortomosaicoir.tif --output ../training_patches_ir --no-gui
+
+# Con parametri personalizzati
+python Step_0_patch.py --input ../ortomosaicoir.tif --output ../training_patches_ir --tile 640 --overlap 0.20
+```
+**Cosa fa:** Legge l'ortomosaico IR, mostra una finestra OpenCV dove puoi cliccare 4 punti per delimitare l'area dell'impianto (premi `C` per confermare, `R` per resettare, `ESC` per tagliare tutto). Divide l'immagine in tile 640×640 px con overlap configurabile (default 20%), scartando le patch con meno del 20% di pixel non-neri (bordi neri del mosaico). Salva i file con nome `tile_col_X_row_Y.jpg`, dove X e Y sono gli offset in pixel — necessari negli step successivi per riproiettare le coordinate.
+
+**Argomenti:**
+| Argomento | Default | Descrizione |
+|---|---|---|
+| `--input` / `-i` | `../ortomosaicoir.tif` | Path ortomosaico input |
+| `--output` / `-o` | `../training_patches_ir` | Cartella output patch |
+| `--no-gui` | — | Salta selezione GUI, taglia tutto |
+| `--tile` | `640` | Dimensione patch in pixel |
+| `--overlap` | `0.20` | Overlap tra patch adiacenti (0.0–0.9) |
+
+**Librerie chiave:** `OpenCV` (imread, resize, fillPoly, imwrite), `numpy`
+
+---
+
 ### Step 1 — Allineamento IR ↔ Drone
 ```bash
-python 1.py
+python Step_1_registrazione.py
 ```
 **Cosa fa:** Legge le tile IR da `training_patches_ir/`, calcola le coordinate geografiche del centro di ogni tile tramite il CRS dell'ortomosaico IR, trova la foto drone più vicina per GPS (EXIF), applica feature matching ORB + omografia per allinearle visivamente. Salva:
 - `risultati_finali/pair/pairN_patch.jpg` — copia della tile IR (bit-a-bit)
@@ -129,7 +156,7 @@ python 1.py
 
 ### Step 2 — Inferenza AI (Rilevamento Pannelli)
 ```bash
-python 2.py [--threshold 0.30]
+python Step_2_Inferenza.py [--threshold 0.30]
 ```
 **Cosa fa:** Carica il modello `RFDETRSegLarge` con i pesi `weights.pt`. Per ogni `pairN_patch.jpg` esegue la segmentazione con soglia di confidenza configurabile. Disegna i contorni delle maschere (o bounding box se la maschera non è disponibile) con colore verde (Sano) o rosso (Difettoso). Salva i risultati annotati in `risultati_finali/inferenza_pannelli/`.
 
@@ -139,7 +166,7 @@ python 2.py [--threshold 0.30]
 
 ### Step 3 — Analisi Termica per Pannello
 ```bash
-python 3.py [--threshold 0.30]
+python Step3_Temperatura.py [--threshold 0.30]
 ```
 **Cosa fa:** Combina inferenza AI + estrazione dati termici dalle foto RJPEG DJI. Usa due strategie per i dati termici:
 1. **RAW parsing binario**: cerca il blob di dati termici dopo il marker JPEG `0xFFD9`, decodifica come `uint16` in Kelvin → °C
@@ -153,7 +180,7 @@ Per ogni pannello rilevato, proietta la maschera AI nello spazio della foto dron
 
 ### Step 4 — Calcolo Efficienza Termodinamica
 ```bash
-python 4.py
+python Step_4_Efficienza.py
 ```
 **Cosa fa:** Script **interattivo** — chiede tipo pannello (Monocristallino/Policristallino) e dimensioni fisiche del modulo. Poi:
 1. Recupera la temperatura ambiente reale via API [Open-Meteo](https://open-meteo.com/) usando GPS + timestamp EXIF della prima foto
@@ -168,7 +195,7 @@ python 4.py
 
 ### Step 5 — Digital Twin, Mappa GeoTIFF e Report PDF
 ```bash
-python 5.py
+python Step_5_Mosaico.py
 ```
 **Cosa fa:** Legge i risultati del Step 4 e genera i tre output finali:
 
@@ -192,11 +219,11 @@ Puoi modificare le costanti in cima a ogni script:
 
 | Costante | File | Valore Default | Descrizione |
 |---|---|---|---|
-| `SOGLIA_AREA_PX` | `4.py`, `5.py` | `10000` px | Area minima maschera (filtra rumore) |
-| `G_IRR_STC` | `5.py` | `1000.0 W/m²` | Irraggiamento condizioni standard |
-| `COSTO_KWH` | `5.py` | `0.40 €` | Prezzo energia per calcolo economico |
-| `GIORNI_UTIL` | `5.py` | `300` giorni | Giorni di produzione annua stimati |
-| `EPSILON_VETRO` | `4.py` | `0.90` | Emissività del vetro fotovoltaico |
+| `SOGLIA_AREA_PX` | `Step_4_Efficienza.py`, `Step_5_Mosaico.py` | `10000` px | Area minima maschera (filtra rumore) |
+| `G_IRR_STC` | `Step_5_Mosaico.py` | `1000.0 W/m²` | Irraggiamento condizioni standard |
+| `COSTO_KWH` | `Step_5_Mosaico.py` | `0.40 €` | Prezzo energia per calcolo economico |
+| `GIORNI_UTIL` | `Step_5_Mosaico.py` | `300` giorni | Giorni di produzione annua stimati |
+| `EPSILON_VETRO` | `Step_4_Efficienza.py` | `0.90` | Emissività del vetro fotovoltaico |
 
 ---
 
@@ -212,7 +239,7 @@ Puoi modificare le costanti in cima a ogni script:
 
 ## Connessione Internet
 
-Gli script `4.py` e `5.py` effettuano chiamate a:
+Gli script `Step_4_Efficienza.py` e `Step_5_Mosaico.py` effettuano chiamate a:
 - **Open-Meteo** — temperatura ambiente storica alla data del volo
 - **PVGIS (EU JRC)** — ore equivalenti di sole (ESH) per la posizione GPS
 
