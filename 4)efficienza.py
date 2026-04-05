@@ -13,6 +13,7 @@ import cv2
 import csv
 import numpy as np
 from PIL import Image, ExifTags
+from datetime import datetime
 
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 warnings.filterwarnings("ignore")
@@ -161,7 +162,7 @@ def get_openmeteo_tamb(lat, lon, utc_time):
         return 25.0
 
 # ==============================================================================
-# MODELLO FISICO MATEMATICO
+# MODELLO FISICO MATEMATICO E REPORTISTICA
 # ==============================================================================
 def applica_stefan_boltzmann(t_app_c, eps, t_amb_c):
     t_app_k = t_app_c + 273.15
@@ -172,6 +173,78 @@ def applica_stefan_boltzmann(t_app_c, eps, t_amb_c):
 def calcola_efficienza_reale(eta_nom, gamma, t_reale_k):
     eta_reale = eta_nom * (1 + gamma * (t_reale_k - T_STC_K))
     return max(0.0, eta_reale)
+
+def genera_report_pdf(csv_rows, pdf_path, user_params):
+    """
+    Legge i dati dal CSV calcolato in memoria e genera un PDF (via PIL)
+    con le statistiche globali, le perdite e il resoconto economico.
+    """
+    # Creiamo un "foglio" A4 digitale (1240x1754 pixel a 150 DPI)
+    w, h = 1240, 1754
+    canvas = np.ones((h, w, 3), dtype=np.uint8) * 255
+
+    tot_pannelli = len(csv_rows)
+    if tot_pannelli == 0: return
+
+    # Calcolo Medie e Somme (Filtriamo i danneggiati sotto il 90%)
+    eta_media = sum([r["Salute_Relativa_pct"] for r in csv_rows]) / tot_pannelli
+    danneggiati = [r for r in csv_rows if r["Salute_Relativa_pct"] < 90.0]
+    num_danneggiati = len(danneggiati)
+    
+    # La potenza persa in W viene divisa per 1000 per ottenere i kW
+    pot_persa_kw = sum([r["Potenza_Persa_W"] for r in danneggiati]) / 1000.0
+    perdita_euro = sum([r["Mancato_Guadagno_EUR_Anno"] for r in danneggiati])
+    
+    # === DISEGNO TESTATA ===
+    cv2.rectangle(canvas, (0, 0), (w, 150), (40, 40, 40), -1)
+    cv2.putText(canvas, "REPORT TECNICO DI ISPEZIONE FOTOVOLTAICA UAV", (50, 90), 
+                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3, cv2.LINE_AA)
+
+    y = 250
+    def add_text(text, scale, color, thick, dy=50):
+        nonlocal y
+        cv2.putText(canvas, text, (80, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
+        y += dy
+
+    add_text(f"Data Elaborazione: {datetime.now().strftime('%d/%m/%Y %H:%M')}", 0.8, (100, 100, 100), 1, 80)
+    
+    add_text("PARAMETRI DI ANALISI", 1.1, (0, 0, 0), 2, 60)
+    cv2.line(canvas, (80, y-40), (1160, y-40), (200, 200, 200), 2)
+    add_text(f"- Tecnologia Moduli: {user_params['tipo']}", 0.9, (50, 50, 50), 1, 40)
+    add_text(f"- Efficienza Nominale (STC): {user_params['eta_nom']*100:.1f}%", 0.9, (50, 50, 50), 1, 40)
+    add_text(f"- Coefficiente di Temperatura: {user_params['gamma']*100:.2f}%/C", 0.9, (50, 50, 50), 1, 80)
+
+    add_text("STATISTICHE GENERALI IMPIANTO", 1.1, (0, 0, 0), 2, 60)
+    cv2.line(canvas, (80, y-40), (1160, y-40), (200, 200, 200), 2)
+    add_text(f"- Totale Pannelli Analizzati dall'IA: {tot_pannelli}", 0.9, (50, 50, 50), 1, 40)
+    add_text(f"- Efficienza Media dell'Impianto (SoH): {eta_media:.1f}%", 0.9, (50, 50, 50), 1, 40)
+    add_text(f"- Pannelli Integri (SoH >= 90%): {tot_pannelli - num_danneggiati}", 0.9, (0, 150, 0), 2, 80)
+
+    add_text("ANALISI DEL DEGRADO (ANOMALIE E HOTSPOT)", 1.1, (0, 0, 200), 2, 60)
+    cv2.line(canvas, (80, y-40), (1160, y-40), (200, 200, 200), 2)
+    add_text(f"- Pannelli Danneggiati (SoH < 90%): {num_danneggiati}", 0.9, (0, 0, 200), 2, 40)
+    add_text(f"- Potenza Nominale Persa Complessiva: {pot_persa_kw:.2f} kW", 0.9, (50, 50, 50), 2, 40)
+    add_text(f"- Mancato Guadagno Stimato: {perdita_euro:.2f} EUR / Anno", 0.9, (50, 50, 50), 2, 80)
+
+    add_text("CONCLUSIONE DIAGNOSTICA", 1.1, (0, 0, 0), 2, 60)
+    cv2.line(canvas, (80, y-40), (1160, y-40), (200, 200, 200), 2)
+    if num_danneggiati > 0:
+        add_text("Si raccomanda la manutenzione o sostituzione dei moduli termicamente", 0.9, (50, 50, 50), 1, 40)
+        add_text("danneggiati per ripristinare la capacita produttiva nominale,", 0.9, (50, 50, 50), 1, 40)
+        add_text(f"evitando una perdita cumulativa di {perdita_euro:.2f} Euro annui.", 0.9, (50, 50, 50), 1, 40)
+    else:
+        add_text("L'impianto si trova in condizioni operative ottimali. Nessun modulo", 0.9, (50, 50, 50), 1, 40)
+        add_text("scende sotto la soglia critica del 90% di efficienza relativa.", 0.9, (50, 50, 50), 1, 40)
+
+    # === DISEGNO PIE' DI PAGINA ===
+    cv2.rectangle(canvas, (0, h-80), (w, h), (40, 40, 40), -1)
+    cv2.putText(canvas, "Generato automaticamente tramite IA - Ispezione Termografica UAV", (50, h-35), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
+
+    # Salva il canvas come vero file PDF multipiattaforma
+    img_pil = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
+    img_pil.save(pdf_path, "PDF", resolution=150.0)
+
 
 # ==============================================================================
 # SDK DJI & ALLINEAMENTO
@@ -409,6 +482,14 @@ def main():
             writer = csv.DictWriter(f, fieldnames=csv_fields)
             writer.writeheader()
             writer.writerows(csv_rows)
+        print(f"\n[+] Report CSV salvato in: {csv_path}")
+        
+        # ---------------------------------------------------------
+        # FASE 3: Generazione Report Tecnico in formato PDF
+        # ---------------------------------------------------------
+        pdf_path = os.path.join(EFF_DIR, "report_tecnico.pdf")
+        genera_report_pdf(csv_rows, pdf_path, user_params)
+        print(f"[+] Report PDF salvato in: {pdf_path}")
 
     print(f"[FINE] Analisi Completata. File salvati in: {EFF_DIR}")
 
