@@ -17,7 +17,7 @@ Yolo/
 │   ├── Step_4_Efficienza.py      # Step 4: Calcolo efficienza termodinamica
 │   └── Step_5_Mosaico.py         # Step 5: Digital Twin + Report PDF + Mappa GeoTIFF
 ├── foto_drone/               # Foto RJPEG del drone DJI (IR + dati GPS)
-├── training_patches_ir/      # Tile 512×512 estratte dall'ortomosaico IR
+├── training_patches_ir/      # Tile 640×640 estratte dall'ortomosaico IR
 ├── ortomosaicoir.tif         # Ortomosaico infrarosso georeferenziato
 ├── ortomosaicorgb.tif        # Ortomosaico RGB georeferenziato
 ├── weights.pt                # Pesi del modello RF-DETR addestrato
