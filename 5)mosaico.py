@@ -42,15 +42,20 @@ COSTO_KWH     = 0.40
 GIORNI_UTIL   = 300
 
 # Colori Stile A2A (in formato BGR per OpenCV)
-C_PRIMARY = (159, 91, 0)   # Blu Aziendale
-C_SUCCESS = (80, 175, 76)  # Verde Sano
-C_WARNING = (0, 152, 255)  # Giallo/Arancio
-C_DANGER  = (54, 67, 244)  # Rosso
-C_TEXT    = (50, 50, 50)   # Grigio scuro
-C_LIGHT   = (240, 245, 245) # Grigio chiarissimo per sfondi
+C_PRIMARY = (159, 91, 0)   
+C_SUCCESS = (80, 175, 76)  
+C_WARNING = (0, 152, 255)  
+C_DANGER  = (54, 67, 244)  
+C_TEXT    = (50, 50, 50)   
+C_LIGHT   = (240, 245, 245) 
+
+# Colori per i poligoni
+COLOR_VERDE  = (0, 255, 0)
+COLOR_GIALLO = (0, 200, 255)
+COLOR_ROSSO  = (0, 0, 255)
 
 # ==============================================================================
-# FUNZIONI DI UTILITA' E API
+# FUNZIONI DI UTILITA'
 # ==============================================================================
 def estrai_gps(image_path):
     try:
@@ -98,8 +103,7 @@ def get_pvgis_esh(lat, lon):
             e_annua = data["outputs"]["totals"]["fixed"]["E_y"]
             esh = e_annua / 365.0
             return esh
-    except Exception as e:
-        print(f"  [!] API PVGIS fallita. Uso default 3.18 ore.")
+    except Exception:
         return 3.18
 
 def mappa_pair_a_originale(patch_ir_dir):
@@ -111,69 +115,51 @@ def mappa_pair_a_originale(patch_ir_dir):
     return mapping
 
 def determina_colore_rgb(eta_rel_pct):
-    if eta_rel_pct >= 90.0:
-        return (0, 255, 0)       # Verde 
-    elif eta_rel_pct >= 80.0:
-        return (0, 200, 255)     # Giallo BGR
-    else:
-        return (0, 0, 255)       # Rosso BGR
+    if eta_rel_pct >= 90.0: return COLOR_VERDE
+    elif eta_rel_pct >= 80.0: return COLOR_GIALLO
+    else: return COLOR_ROSSO
 
 # ==============================================================================
-# REPORTISTICA AVANZATA PDF A2A-LIKE
+# REPORTISTICA PDF A2A-LIKE
 # ==============================================================================
 def disegna_grafico_a_ciambella(canvas, cx, cy, r, eta_media_pct):
-    """Disegna un grafico a ciambella (Doughnut Chart) elegante in OpenCV."""
     nom_pct = 100.0
     angolo_erogata = int(360 * (eta_media_pct / nom_pct))
     
-    # Ombra leggera
     cv2.circle(canvas, (cx+2, cy+5), r+2, (220, 220, 220), -1, cv2.LINE_AA)
-    
-    # Fetta Grigia (Perdita) - Disegna cerchio intero di base
     cv2.circle(canvas, (cx, cy), r, (220, 220, 220), -1, cv2.LINE_AA)
-    
-    # Fetta Verde (Efficienza)
     cv2.ellipse(canvas, (cx, cy), (r, r), -90, 0, angolo_erogata, C_SUCCESS, -1, cv2.LINE_AA)
-    
-    # Buco centrale per farlo diventare a ciambella
     r_inner = int(r * 0.65)
     cv2.circle(canvas, (cx, cy), r_inner, (255, 255, 255), -1, cv2.LINE_AA)
     
-    # Testo centrale
     label = f"{eta_media_pct:.1f}%"
     font = cv2.FONT_HERSHEY_SIMPLEX
     (tw, th), _ = cv2.getTextSize(label, font, 1.8, 4)
     cv2.putText(canvas, label, (cx - tw//2, cy + th//2), font, 1.8, C_TEXT, 4, cv2.LINE_AA)
 
 def genera_report_pdf_a2a(dati, pdf_path):
-    """Genera un PDF A4 in stile bolletta moderna."""
-    w, h = 1240, 1754 # A4 a 150 DPI
+    w, h = 1240, 1754 
     canvas = np.ones((h, w, 3), dtype=np.uint8) * 255
 
-    # --- HEADER BLU ---
     cv2.rectangle(canvas, (0, 0), (w, 160), C_PRIMARY, -1)
     cv2.putText(canvas, "REPORT EFFICIENZA IMPIANTO FOTOVOLTAICO", (50, 70), 
                 cv2.FONT_HERSHEY_SIMPLEX, 1.3, (255, 255, 255), 3, cv2.LINE_AA)
     cv2.putText(canvas, f"Ispezione UAV Termografica | Data: {datetime.now().strftime('%d/%m/%Y')} | Rif: REP-{datetime.now().strftime('%y%m%d')}", 
                 (50, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (230, 230, 230), 1, cv2.LINE_AA)
 
-    # Helper per i titoli di sezione
     def add_section_title(text, x, y, color=C_PRIMARY):
         cv2.rectangle(canvas, (x, y-25), (x+15, y+5), color, -1)
         cv2.putText(canvas, text.upper(), (x+30, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_TEXT, 2, cv2.LINE_AA)
         cv2.line(canvas, (x, y+15), (x+500, y+15), (200, 200, 200), 1)
 
-    # Helper per le righe delle tabelle
     def add_row(label, value, x, y, val_color=C_TEXT, bold=False):
         thick = 2 if bold else 1
         cv2.putText(canvas, label, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (120, 120, 120), 1, cv2.LINE_AA)
         cv2.putText(canvas, str(value), (x+350, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, val_color, thick, cv2.LINE_AA)
         cv2.line(canvas, (x, y+15), (x+500, y+15), (240, 240, 240), 1)
 
-    # === COLONNA SINISTRA (Parametri e Statistiche) ===
     col1_x = 80
     y_cursor = 250
-    
     add_section_title("Parametri di Analisi", col1_x, y_cursor)
     y_cursor += 50
     add_row("Tecnologia Moduli", dati['tipo_pannello'], col1_x, y_cursor, bold=True)
@@ -183,25 +169,21 @@ def genera_report_pdf_a2a(dati, pdf_path):
     y_cursor += 80
     add_section_title("Statistiche Impianto", col1_x, y_cursor)
     y_cursor += 50
-    add_row("Totale Pannelli Analizzati", str(dati['tot_pannelli']), col1_x, y_cursor, bold=True)
+    add_row("Totale Pannelli Mappati", str(dati['tot_pannelli']), col1_x, y_cursor, bold=True)
     y_cursor += 40
-    add_row("Pannelli Sani (>= 90%)", str(dati['tot_sani']), col1_x, y_cursor, val_color=C_SUCCESS, bold=True)
+    add_row("Pannelli VERDI (>= 90%)", str(dati['tot_sani']), col1_x, y_cursor, val_color=C_SUCCESS, bold=True)
     y_cursor += 40
-    add_row("Pannelli Degradati (80-89%)", str(dati['tot_degradati']), col1_x, y_cursor, val_color=C_WARNING, bold=True)
+    add_row("Pannelli GIALLI (80-89%)", str(dati['tot_degradati']), col1_x, y_cursor, val_color=C_WARNING, bold=True)
     y_cursor += 40
-    add_row("Pannelli Rotti (< 80%)", str(dati['tot_rotti']), col1_x, y_cursor, val_color=C_DANGER, bold=True)
+    add_row("Pannelli ROSSI (< 80%)", str(dati['tot_rotti']), col1_x, y_cursor, val_color=C_DANGER, bold=True)
 
-    # === COLONNA DESTRA (Grafico a Ciambella e Soldi) ===
     col2_x = 650
     y_cursor = 250
-    
     add_section_title("Efficienza Media Impianto", col2_x, y_cursor, color=C_SUCCESS)
     
-    # Disegna il grafico a ciambella
     graph_cx, graph_cy = col2_x + 250, y_cursor + 200
     disegna_grafico_a_ciambella(canvas, graph_cx, graph_cy, 140, dati['eta_media_impianto'])
     
-    # Legenda Grafico
     y_legend = graph_cy + 180
     cv2.rectangle(canvas, (col2_x+50, y_legend-12), (col2_x+65, y_legend+3), C_SUCCESS, -1)
     cv2.putText(canvas, "Capacita Reale Erogata", (col2_x+80, y_legend), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_TEXT, 1, cv2.LINE_AA)
@@ -216,7 +198,6 @@ def genera_report_pdf_a2a(dati, pdf_path):
     add_row("Potenza Nominale Persa", f"{dati['pot_persa_kw']:.2f} kW", col2_x, y_cursor)
     
     y_cursor += 50
-    # Riquadro dei Soldi
     box_rect = (col2_x, y_cursor, col2_x + 500, y_cursor + 120)
     cv2.rectangle(canvas, (box_rect[0], box_rect[1]), (box_rect[2], box_rect[3]), C_LIGHT, -1)
     cv2.rectangle(canvas, (box_rect[0], box_rect[1]), (box_rect[2], box_rect[3]), C_WARNING, 2)
@@ -226,39 +207,36 @@ def genera_report_pdf_a2a(dati, pdf_path):
     cv2.putText(canvas, "Mancato Guadagno Stimato Annuo", (box_rect[0]+110, box_rect[1]+100), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_TEXT, 1, cv2.LINE_AA)
 
-    # === CONCLUSIONE DIAGNOSTICA ===
     y_cursor = 1150
     add_section_title("Conclusione Diagnostica", 80, y_cursor)
     
     y_cursor += 40
     box_h = 140
     if dati['tot_rotti'] + dati['tot_degradati'] > 0:
-        box_color = (235, 235, 255) # Sfondo rossastro (BGR)
+        box_color = (235, 235, 255) 
         line_color = C_DANGER
-        t1 = f"ATTENZIONE: Rilevati {dati['tot_rotti']} moduli gravemente danneggiati e {dati['tot_degradati']} in fase di degrado."
+        t1 = f"ATTENZIONE: Rilevati {dati['tot_rotti']} moduli Rossi e {dati['tot_degradati']} moduli Gialli."
         t2 = f"Si raccomanda l'intervento tecnico. L'assenza di manutenzione comportera una perdita"
         t3 = f"cumulativa di {dati['perdita_euro']:.2f} Euro/anno a causa dei colli di bottiglia sulle stringhe."
     else:
-        box_color = (235, 255, 235) # Sfondo verdino (BGR)
+        box_color = (235, 255, 235) 
         line_color = C_SUCCESS
-        t1 = "L'impianto risulta in ottime condizioni operative. Nessun modulo presenta anomalie"
-        t2 = "critiche tali da compromettere la produzione nominale."
+        t1 = "L'impianto risulta in ottime condizioni operative. Tutti i moduli sono Verdi."
+        t2 = "Nessuna anomalia termica critica tale da compromettere la produzione."
         t3 = ""
 
     cv2.rectangle(canvas, (80, y_cursor), (1160, y_cursor+box_h), box_color, -1)
-    cv2.rectangle(canvas, (80, y_cursor), (86, y_cursor+box_h), line_color, -1) # Bordo laterale colorato
+    cv2.rectangle(canvas, (80, y_cursor), (86, y_cursor+box_h), line_color, -1) 
     
     cv2.putText(canvas, t1, (110, y_cursor+45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, C_TEXT, 1, cv2.LINE_AA)
     cv2.putText(canvas, t2, (110, y_cursor+80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, C_TEXT, 1, cv2.LINE_AA)
     if t3:
         cv2.putText(canvas, t3, (110, y_cursor+115), cv2.FONT_HERSHEY_SIMPLEX, 0.7, C_TEXT, 1, cv2.LINE_AA)
 
-    # === FOOTER ===
     cv2.rectangle(canvas, (0, h-60), (w, h), (40, 40, 40), -1)
     cv2.putText(canvas, "Generato tramite Intelligenza Artificiale - Ispezione Termografica UAV", (50, h-25), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
 
-    # Salva come PDF via PIL
     img_pil = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
     img_pil.save(pdf_path, "PDF", resolution=150.0)
 
@@ -330,7 +308,8 @@ def main():
         if img_patch is None: continue
         
         img_pil = Image.fromarray(cv2.cvtColor(img_patch, cv2.COLOR_BGR2RGB))
-        results = model.predict(img_pil, threshold=0.30)
+        # SOGLIA ALZATA AL 60% COME IN 4.PY PER EVITARE FALSI POSITIVI
+        results = model.predict(img_pil, threshold=0.60)
         
         if results is None or len(results.xyxy) == 0: continue
 
@@ -347,6 +326,11 @@ def main():
             if not contours: continue
             
             c_big = max(contours, key=cv2.contourArea)
+            
+            # FILTRO AREA MINIMA COME IN 4.PY PER EVITARE FALSI POSITIVI
+            if cv2.contourArea(c_big) < 1500:
+                continue
+
             px_xs = c_big[:, 0, 0] + patch_col_offset
             px_ys = c_big[:, 0, 1] + patch_row_offset
             
@@ -409,17 +393,18 @@ def main():
     if lat and lon:
         esh = get_pvgis_esh(lat, lon)
 
+    # CONTEGGIO EFFETTIVO BASATO SUL COLORE DEL POLIGONO
     tot_pannelli = len(pannelli_filtrati)
+    tot_verdi = len([p for p in pannelli_filtrati if p['color'] == COLOR_VERDE])
+    tot_gialli = len([p for p in pannelli_filtrati if p['color'] == COLOR_GIALLO])
+    tot_rossi = len([p for p in pannelli_filtrati if p['color'] == COLOR_ROSSO])
+
     somma_eta = sum([p['eta'] for p in pannelli_filtrati])
     eta_media_impianto = somma_eta / tot_pannelli if tot_pannelli > 0 else 0
     
-    tot_sani = len([p for p in pannelli_filtrati if p['eta'] >= 90.0])
-    tot_degradati = len([p for p in pannelli_filtrati if 80.0 <= p['eta'] < 90.0])
-    tot_rotti = len([p for p in pannelli_filtrati if p['eta'] < 80.0])
-    
     pot_persa_w_tot = 0.0
     for p in pannelli_filtrati:
-        if p['eta'] < 90.0:
+        if p['color'] == COLOR_GIALLO or p['color'] == COLOR_ROSSO:
             p_max_w = G_IRR_STC * user_params["area"] * user_params["eta_nom"]
             p_reale_w = p_max_w * (p['eta'] / 100.0)
             pot_persa_w_tot += (p_max_w - p_reale_w)
@@ -432,9 +417,9 @@ def main():
         'eta_nominale_assoluta': user_params["eta_nom"] * 100,
         'esh': esh,
         'tot_pannelli': tot_pannelli,
-        'tot_sani': tot_sani,
-        'tot_degradati': tot_degradati,
-        'tot_rotti': tot_rotti,
+        'tot_sani': tot_verdi,
+        'tot_degradati': tot_gialli,
+        'tot_rotti': tot_rossi,
         'eta_media_impianto': eta_media_impianto,
         'pot_persa_kw': pot_persa_kw,
         'perdita_euro': perdita_euro
