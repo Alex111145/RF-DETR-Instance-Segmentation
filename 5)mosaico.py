@@ -31,7 +31,7 @@ CSV_GREZZI         = os.path.join(OUTPUT_DIR, "efficienza_risultati", "dati_grez
 CONFIG_PATH        = os.path.join(OUTPUT_DIR, "efficienza_risultati", "config_analisi.json")
 MAPPA_OUT_PATH     = os.path.join(OUTPUT_DIR, "mappa_efficienza_rgb.tif")
 PDF_OUT_PATH       = os.path.join(OUTPUT_DIR, "report_tecnico.pdf")
-CSV_UNICI          = os.path.join(OUTPUT_DIR, "efficienza_risultati", "report_pannelli_unici.csv")
+CSV_UNICI          = os.path.join(OUTPUT_DIR,  "report_pannelli_unici.csv")
 
 IR_MOSAIC  = os.path.join(BASE_DIR, "ortomosaicoir.tif")
 RGB_MOSAIC = os.path.join(BASE_DIR, "ortomosaicorgb.tif")
