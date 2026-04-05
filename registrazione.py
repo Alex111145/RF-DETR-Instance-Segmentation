@@ -26,6 +26,7 @@ DRONE_PHOTOS_DIR   = os.path.join(BASE_DIR, "foto_drone")
 MOSAIC_PATH        = os.path.join(BASE_DIR, "ortomosaicoir.tif")
 OUTPUT_DIR         = os.path.join(BASE_DIR, "risultati_finali")
 REGISTRATION_DIR   = os.path.join(OUTPUT_DIR, "registrazione_allineamento")
+PAIRS_DIR          = os.path.join(OUTPUT_DIR, "pair")
 
 # ==============================================================================
 # FUNZIONI GPS E METADATI
@@ -102,6 +103,7 @@ def allinea_e_disegna(patch, drone_img):
 # ==============================================================================
 def main():
     os.makedirs(REGISTRATION_DIR, exist_ok=True)
+    os.makedirs(PAIRS_DIR, exist_ok=True)
 
     print(f"[*] Lettura CRS Mosaico: {os.path.basename(MOSAIC_PATH)}...", flush=True)
     with rasterio.open(MOSAIC_PATH) as src:
@@ -173,12 +175,23 @@ def main():
 
         final_image = np.vstack((header_canvas, combined_content))
 
-        out_path = os.path.join(REGISTRATION_DIR, f"aligned_{filename}")
+        # ID Univoco per questo ciclo
+        pair_prefix = f"pair{i+1}"
+
+        # Salvataggio della foto affiancata con il prefisso "pair" nel nome
+        out_path = os.path.join(REGISTRATION_DIR, f"{pair_prefix}_{filename}")
         cv2.imwrite(out_path, final_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        
+        # Salvataggio delle due foto separate nella cartella pair
+        cv2.imwrite(os.path.join(PAIRS_DIR, f"{pair_prefix}_patch.jpg"), patch_res, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        
+        # Usiamo img_drone (originale) invece di drone_res (che ha il rettangolo)
+        cv2.imwrite(os.path.join(PAIRS_DIR, f"{pair_prefix}_drone.jpg"), img_drone, [cv2.IMWRITE_JPEG_QUALITY, 95])
         
         print(f"[{i+1}/{len(patch_files)}] ALLINEATA: {filename} -> {drone_filename}", flush=True)
 
     print(f"\n[FINE] Risultati registrazione in: {REGISTRATION_DIR}")
+    print(f"[FINE] Coppie separate salvate in: {PAIRS_DIR}")
 
 if __name__ == "__main__":
     main()
