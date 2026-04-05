@@ -31,6 +31,7 @@ CSV_GREZZI         = os.path.join(OUTPUT_DIR, "efficienza_risultati", "dati_grez
 CONFIG_PATH        = os.path.join(OUTPUT_DIR, "efficienza_risultati", "config_analisi.json")
 MAPPA_OUT_PATH     = os.path.join(OUTPUT_DIR, "mappa_efficienza_rgb.tif")
 PDF_OUT_PATH       = os.path.join(OUTPUT_DIR, "report_tecnico.pdf")
+CSV_UNICI          = os.path.join(OUTPUT_DIR, "efficienza_risultati", "report_pannelli_unici.csv")
 
 IR_MOSAIC  = os.path.join(BASE_DIR, "ortomosaicoir.tif")
 RGB_MOSAIC = os.path.join(BASE_DIR, "ortomosaicorgb.tif")
@@ -172,7 +173,7 @@ def genera_report_pdf_a2a(dati, pdf_path):
     y_cursor += 80
     add_section_title("Statistiche Impianto", col1_x, y_cursor)
     y_cursor += 50
-    add_row("Totale Pannelli Mappati", str(dati['tot_pannelli']), col1_x, y_cursor, bold=True)
+    add_row("Totale Pannelli Unici", str(dati['tot_pannelli']), col1_x, y_cursor, bold=True)
     y_cursor += 40
     add_row("Pannelli VERDI (>= 90%)", str(dati['tot_sani']), col1_x, y_cursor, val_color=C_SUCCESS, bold=True)
     y_cursor += 40
@@ -210,6 +211,31 @@ def genera_report_pdf_a2a(dati, pdf_path):
     cv2.putText(canvas, "Mancato Guadagno Stimato Annuo", (box_rect[0]+110, box_rect[1]+100), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_TEXT, 1, cv2.LINE_AA)
 
+    # === NUOVA SEZIONE: TOP MODULI CRITICI ===
+    y_cursor += 160
+    add_section_title("Top Moduli da Sostituire", col2_x, y_cursor, color=C_DANGER)
+    y_cursor += 40
+    
+    if dati['worst_panels']:
+        # Header Tabella Top 5
+        cv2.putText(canvas, "ID", (col2_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_TEXT, 2)
+        cv2.putText(canvas, "SoH", (col2_x + 80, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_TEXT, 2)
+        cv2.putText(canvas, "Persa (W)", (col2_x + 180, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_TEXT, 2)
+        cv2.putText(canvas, "Danno (EUR)", (col2_x + 320, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_TEXT, 2)
+        cv2.line(canvas, (col2_x, y_cursor+15), (col2_x+500, y_cursor+15), (200, 200, 200), 1)
+        y_cursor += 40
+        
+        for wp in dati['worst_panels']:
+            cv2.putText(canvas, f"#{wp['id']}", (col2_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_DANGER, 2)
+            cv2.putText(canvas, f"{wp['eta']:.1f}%", (col2_x + 80, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_TEXT, 1)
+            cv2.putText(canvas, f"{wp['p_persa_w']:.1f}", (col2_x + 180, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_TEXT, 1)
+            cv2.putText(canvas, f"- {wp['euro_persi']:.2f}", (col2_x + 320, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_DANGER, 2)
+            cv2.line(canvas, (col2_x, y_cursor+15), (col2_x+500, y_cursor+15), (240, 240, 240), 1)
+            y_cursor += 35
+    else:
+        cv2.putText(canvas, "Nessun modulo critico rilevato.", (col2_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.7, C_SUCCESS, 1)
+
+    # === CONCLUSIONE DIAGNOSTICA (Spostata a sinistra in basso) ===
     y_cursor = 1150
     add_section_title("Conclusione Diagnostica", 80, y_cursor)
     
@@ -228,13 +254,14 @@ def genera_report_pdf_a2a(dati, pdf_path):
         t2 = "Nessuna anomalia termica critica tale da compromettere la produzione."
         t3 = ""
 
-    cv2.rectangle(canvas, (80, y_cursor), (1160, y_cursor+box_h), box_color, -1)
+    # Usa solo mezza pagina per la conclusione
+    cv2.rectangle(canvas, (80, y_cursor), (600, y_cursor+box_h), box_color, -1)
     cv2.rectangle(canvas, (80, y_cursor), (86, y_cursor+box_h), line_color, -1) 
     
-    cv2.putText(canvas, t1, (110, y_cursor+45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, C_TEXT, 1, cv2.LINE_AA)
-    cv2.putText(canvas, t2, (110, y_cursor+80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, C_TEXT, 1, cv2.LINE_AA)
+    cv2.putText(canvas, t1, (110, y_cursor+45), cv2.FONT_HERSHEY_SIMPLEX, 0.55, C_TEXT, 1, cv2.LINE_AA)
+    cv2.putText(canvas, t2, (110, y_cursor+80), cv2.FONT_HERSHEY_SIMPLEX, 0.55, C_TEXT, 1, cv2.LINE_AA)
     if t3:
-        cv2.putText(canvas, t3, (110, y_cursor+115), cv2.FONT_HERSHEY_SIMPLEX, 0.7, C_TEXT, 1, cv2.LINE_AA)
+        cv2.putText(canvas, t3, (110, y_cursor+115), cv2.FONT_HERSHEY_SIMPLEX, 0.55, C_TEXT, 1, cv2.LINE_AA)
 
     cv2.rectangle(canvas, (0, h-60), (w, h), (40, 40, 40), -1)
     cv2.putText(canvas, "Generato tramite Intelligenza Artificiale - Ispezione Termografica UAV", (50, h-25), 
@@ -355,7 +382,7 @@ def main():
                 'area': area_globale, 'eta': eta_rel, 'color': color_rgb
             })
 
-    # Filtro NMS
+    # Filtro NMS (Evita i doppioni)
     pannelli_globali.sort(key=lambda p: p['area'], reverse=True)
     pannelli_filtrati = []
     for nuovo_pan in pannelli_globali:
@@ -368,13 +395,47 @@ def main():
         if not duplicato:
             pannelli_filtrati.append(nuovo_pan)
 
-    # Disegno Finale Ortomosaico
+    # ==========================================================
+    # ASSEGNAZIONE ID, CALCOLI E GENERAZIONE MAPPA / CSV
+    # ==========================================================
+    print(f"[*] Estrazione ESH e Calcolo Danni per singolo pannello...")
+    esh = 3.18
+    primo_originale = glob.glob(os.path.join(PATCH_IR_DIR, "*.jpg"))[0]
+    lat, lon = estrai_gps(primo_originale)
+    if lat and lon:
+        esh = get_pvgis_esh(lat, lon)
+
+    # Ordiniamo visivamente per posizione Y (così l'ID 1 è in alto a sinistra)
+    pannelli_filtrati.sort(key=lambda p: (p['centroid'][1], p['centroid'][0]))
+
+    for idx, pan in enumerate(pannelli_filtrati):
+        pan['id'] = idx + 1
+        
+        # Calcolo perdite solo per Gialli e Rossi
+        if pan['color'] == COLOR_GIALLO or pan['color'] == COLOR_ROSSO:
+            p_max_w = G_IRR_STC * user_params["area"] * user_params["eta_nom"]
+            p_reale_w = p_max_w * (pan['eta'] / 100.0)
+            p_persa = p_max_w - p_reale_w
+            euro = (p_persa / 1000.0) * esh * GIORNI_UTIL * COSTO_KWH
+            
+            pan['p_persa_w'] = p_persa
+            pan['euro_persi'] = euro
+            pan['stato'] = 'Degradato' if pan['color'] == COLOR_GIALLO else 'Rotto'
+        else:
+            pan['p_persa_w'] = 0.0
+            pan['euro_persi'] = 0.0
+            pan['stato'] = 'Sano'
+
+    # Disegno Finale Ortomosaico con NUMERO ID
     for pan in pannelli_filtrati:
         cv2.drawContours(rgb_canvas, pan['contour'], -1, pan['color'], 4)
-        label = f"{pan['eta']:.1f}%"
+        
+        # Nuova Etichetta: #ID | Efficienza
+        label = f"#{pan['id']} | {pan['eta']:.1f}%"
+        
         x, y, w, h = cv2.boundingRect(pan['contour'])
         cx, cy = pan['centroid']
-        font_scale = max(0.7, w / 180.0) 
+        font_scale = max(0.55, w / 220.0) 
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 2)
         cv2.rectangle(rgb_canvas, (cx - tw//2 - 5, cy - th - 5), (cx + tw//2 + 5, cy + 5), (0, 0, 0), -1)
         cv2.putText(rgb_canvas, label, (cx - tw//2, cy), cv2.FONT_HERSHEY_SIMPLEX, font_scale, pan['color'], 2, cv2.LINE_AA)
@@ -384,18 +445,19 @@ def main():
     with rasterio.open(MAPPA_OUT_PATH, 'w', **rgb_profile) as dst:
         dst.write(out_img_chw)
 
-    # ==========================================================
-    # PREPARAZIONE DATI E CREAZIONE PDF
-    # ==========================================================
-    print(f"[*] Estrazione ESH e generazione Report Tecnico PDF...")
-    
-    esh = 3.18
-    primo_originale = glob.glob(os.path.join(PATCH_IR_DIR, "*.jpg"))[0]
-    lat, lon = estrai_gps(primo_originale)
-    if lat and lon:
-        esh = get_pvgis_esh(lat, lon)
+    # Salvataggio CSV Dettagliato
+    print(f"[*] Creazione Report CSV Pannelli Unici...")
+    with open(CSV_UNICI, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["ID_Pannello", "Stato", "Efficienza_Relativa_pct", "Potenza_Persa_W", "Mancato_Guadagno_EUR"])
+        for p in pannelli_filtrati:
+            writer.writerow([p['id'], p['stato'], f"{p['eta']:.2f}", f"{p['p_persa_w']:.2f}", f"{p['euro_persi']:.2f}"])
 
-    # CONTEGGIO EFFETTIVO BASATO SUL COLORE DEL POLIGONO SULL'ORTOMOSAICO
+    # ==========================================================
+    # CREAZIONE PDF E TOP 5 PEGGIORI
+    # ==========================================================
+    print(f"[*] Generazione Report Tecnico PDF...")
+    
     tot_pannelli = len(pannelli_filtrati)
     tot_verdi = len([p for p in pannelli_filtrati if p['color'] == COLOR_VERDE])
     tot_gialli = len([p for p in pannelli_filtrati if p['color'] == COLOR_GIALLO])
@@ -403,16 +465,13 @@ def main():
 
     somma_eta = sum([p['eta'] for p in pannelli_filtrati])
     eta_media_impianto = somma_eta / tot_pannelli if tot_pannelli > 0 else 0
-    
-    pot_persa_w_tot = 0.0
-    for p in pannelli_filtrati:
-        if p['color'] == COLOR_GIALLO or p['color'] == COLOR_ROSSO:
-            p_max_w = G_IRR_STC * user_params["area"] * user_params["eta_nom"]
-            p_reale_w = p_max_w * (p['eta'] / 100.0)
-            pot_persa_w_tot += (p_max_w - p_reale_w)
-            
+    pot_persa_w_tot = sum([p['p_persa_w'] for p in pannelli_filtrati])
     pot_persa_kw = pot_persa_w_tot / 1000.0
-    perdita_euro = (pot_persa_kw * esh) * GIORNI_UTIL * COSTO_KWH
+    perdita_euro = sum([p['euro_persi'] for p in pannelli_filtrati])
+    
+    # Prepara Top 5 Peggiori Pannelli
+    peggiori = [p for p in pannelli_filtrati if p['eta'] < 90.0]
+    peggiori.sort(key=lambda x: x['eta']) # Ordina dal peggiore in su
     
     dati_report = {
         'tipo_pannello': user_params['tipo'],
@@ -424,13 +483,15 @@ def main():
         'tot_rotti': tot_rossi,
         'eta_media_impianto': eta_media_impianto,
         'pot_persa_kw': pot_persa_kw,
-        'perdita_euro': perdita_euro
+        'perdita_euro': perdita_euro,
+        'worst_panels': peggiori[:5] # Manda solo la top 5
     }
     
     genera_report_pdf_a2a(dati_report, PDF_OUT_PATH)
 
     print(f"\n[FINE] Elaborazione conclusa con successo!")
     print(f"  -> Mappa RGB salvata in: {MAPPA_OUT_PATH}")
+    print(f"  -> Report CSV Unici in : {CSV_UNICI}")
     print(f"  -> Report PDF salvato in: {PDF_OUT_PATH}")
     print("="*60 + "\n")
 
