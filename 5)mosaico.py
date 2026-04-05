@@ -173,7 +173,7 @@ def genera_report_pdf_a2a(dati, pdf_path):
     y_cursor += 80
     add_section_title("Statistiche Impianto", col1_x, y_cursor)
     y_cursor += 50
-    add_row("Totale Pannelli Unici", str(dati['tot_pannelli']), col1_x, y_cursor, bold=True)
+    add_row("Totale Pannelli Mappati", str(dati['tot_pannelli']), col1_x, y_cursor, bold=True)
     y_cursor += 40
     add_row("Pannelli VERDI (>= 90%)", str(dati['tot_sani']), col1_x, y_cursor, val_color=C_SUCCESS, bold=True)
     y_cursor += 40
@@ -242,17 +242,17 @@ def genera_report_pdf_a2a(dati, pdf_path):
     y_cursor += 40
     box_h = 140
     if dati['tot_rotti'] + dati['tot_degradati'] > 0:
-        box_color = (235, 235, 255) 
+        box_color = (235, 235, 255) # Sfondo rossastro (BGR)
         line_color = C_DANGER
         t1 = f"ATTENZIONE: Rilevati {dati['tot_rotti']} moduli Rossi e {dati['tot_degradati']} moduli Gialli."
         t2 = f"Si raccomanda l'intervento tecnico. L'assenza di manutenzione comportera una perdita"
         t3 = f"cumulativa di {dati['perdita_euro']:.2f} Euro/anno a causa dei colli di bottiglia sulle stringhe."
     else:
-        box_color = (235, 255, 235) 
+        box_color = (235, 255, 235) # Sfondo verdino (BGR)
         line_color = C_SUCCESS
-        t1 = "L'impianto risulta in ottime condizioni operative. Tutti i moduli sono Verdi."
-        t2 = "Nessuna anomalia termica critica tale da compromettere la produzione."
-        t3 = ""
+        t1 = "L'impianto risulta in ottime condizioni operative."
+        t2 = "Tutti i moduli sono Verdi. Nessuna anomalia termica"
+        t3 = "critica tale da compromettere la produzione."
 
     # Usa solo mezza pagina per la conclusione
     cv2.rectangle(canvas, (80, y_cursor), (600, y_cursor+box_h), box_color, -1)
