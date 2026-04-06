@@ -8,12 +8,12 @@ Utilizza un modello AI di segmentazione (RF-DETR) per identificare i pannelli e 
 ## Struttura del Progetto
 
 ```
-Yolo/
+RF-DETR-Instance-Segmentation/
 ├── inferenza/
 │   ├── Step_0_patch.py           # Step 0: Taglio ortomosaico IR in patch 640×640
 │   ├── Step_1_registrazione.py   # Step 1: Allineamento patch IR ↔ foto drone
 │   ├── Step_2_Inferenza.py       # Step 2: Inferenza AI (rilevamento pannelli)
-│   ├── Step3_Temperatura.py      # Step 3: Analisi termica per pannello
+│   ├── Step_3_Temperatura.py     # Step 3: Analisi termica per pannello
 │   ├── Step_4_Efficienza.py      # Step 4: Calcolo efficienza termodinamica
 │   └── Step_5_Mosaico.py         # Step 5: Digital Twin + Report PDF + Mappa GeoTIFF
 ├── foto_drone/               # Foto RJPEG del drone DJI (IR + dati GPS)
@@ -57,7 +57,7 @@ Prima di avviare la pipeline, rendi eseguibile il binario DJI e registra le libr
 chmod +x /root/RF-DETR-Instance-Segmentation/sdk/linux/dji_irp
 
 # Copia le librerie .so nella directory di sistema
- cp /root/RF-DETR-Instance-Segmentation/sdk/linux/*.so* /usr/lib/
+sudo cp /root/RF-DETR-Instance-Segmentation/sdk/linux/*.so* /usr/lib/
 
 # Aggiorna la cache del linker
 sudo ldconfig
@@ -95,7 +95,7 @@ pip install -r requirements.txt
 
 ## Dati di Input Necessari
 
-Prima di avviare la pipeline assicurati di avere nella cartella `Yolo/`:
+Prima di avviare la pipeline assicurati di avere nella cartella `RF-DETR-Instance-Segmentation/`:
 
 | File / Cartella | Descrizione |
 |---|---|
@@ -112,7 +112,7 @@ Prima di avviare la pipeline assicurati di avere nella cartella `Yolo/`:
 Gli script vanno eseguiti **in sequenza** dalla cartella `inferenza/`:
 
 ```bash
-cd Yolo/inferenza
+cd RF-DETR-Instance-Segmentation/inferenza
 ```
 
 ### Step 0 — Taglio Ortomosaico IR in Patch
@@ -156,7 +156,8 @@ python Step_1_registrazione.py
 
 ### Step 2 — Inferenza AI (Rilevamento Pannelli)
 ```bash
-python Step_2_Inferenza.py [--threshold 0.30]
+python Step_2_Inferenza.py
+python Step_2_Inferenza.py --threshold 0.30
 ```
 **Cosa fa:** Carica il modello `RFDETRSegLarge` con i pesi `weights.pt`. Per ogni `pairN_patch.jpg` esegue la segmentazione con soglia di confidenza configurabile. Disegna i contorni delle maschere (o bounding box se la maschera non è disponibile) con colore verde (Sano) o rosso (Difettoso). Salva i risultati annotati in `risultati_finali/inferenza_pannelli/`.
 
@@ -166,7 +167,8 @@ python Step_2_Inferenza.py [--threshold 0.30]
 
 ### Step 3 — Analisi Termica per Pannello
 ```bash
-python Step3_Temperatura.py [--threshold 0.30]
+python Step_3_Temperatura.py
+python Step_3_Temperatura.py --threshold 0.30
 ```
 **Cosa fa:** Combina inferenza AI + estrazione dati termici dalle foto RJPEG DJI. Usa due strategie per i dati termici:
 1. **RAW parsing binario**: cerca il blob di dati termici dopo il marker JPEG `0xFFD9`, decodifica come `uint16` in Kelvin → °C
@@ -181,6 +183,7 @@ Per ogni pannello rilevato, proietta la maschera AI nello spazio della foto dron
 ### Step 4 — Calcolo Efficienza Termodinamica
 ```bash
 python Step_4_Efficienza.py
+python Step_4_Efficienza.py --threshold 0.30
 ```
 **Cosa fa:** Script **interattivo** — chiede tipo pannello (Monocristallino/Policristallino) e dimensioni fisiche del modulo. Poi:
 1. Recupera la temperatura ambiente reale via API [Open-Meteo](https://open-meteo.com/) usando GPS + timestamp EXIF della prima foto
