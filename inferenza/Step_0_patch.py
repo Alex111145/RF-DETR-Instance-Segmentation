@@ -36,7 +36,7 @@ def get_base_dir():
 BASE_DIR = get_base_dir()
 
 TILE_SIZE   = 640    # dimensione patch — NON modificare, deve corrispondere al training
-OVERLAP     = 0.20   # 20% overlap tra patch adiacenti
+OVERLAP     = 0.50   # 20% overlap tra patch adiacenti
 MIN_CONTENT = 0.20   # scarta patch con meno del 20% di pixel non-neri
 
 # ==============================================================================
