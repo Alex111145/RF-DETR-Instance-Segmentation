@@ -162,7 +162,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", default=INPUT_DIR)
     parser.add_argument("--output", default=THERMAL_DIR)
-    parser.add_argument("--threshold", type=float, default=0.30)
+    parser.add_argument("--threshold", type=float, default=0.70)
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
