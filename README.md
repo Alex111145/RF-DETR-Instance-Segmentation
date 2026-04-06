@@ -54,10 +54,10 @@ Prima di avviare la pipeline, rendi eseguibile il binario DJI e registra le libr
 
 ```bash
 # Rendi eseguibile il tool di estrazione termica
-chmod +x /root/Yolo/sdk/linux/dji_irp
+chmod +x /root/RF-DETR-Instance-Segmentation/sdk/linux/dji_irp
 
 # Copia le librerie .so nella directory di sistema
-sudo cp /root/Yolo/sdk/linux/*.so* /usr/lib/
+ cp /root/RF-DETR-Instance-Segmentation/sdk/linux/*.so* /usr/lib/
 
 # Aggiorna la cache del linker
 sudo ldconfig
