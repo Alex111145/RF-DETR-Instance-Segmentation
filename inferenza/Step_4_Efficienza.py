@@ -249,6 +249,10 @@ def disegna_risultati_efficienza(img, det_info):
 # MAIN PIPELINE
 # ==============================================================================
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--threshold", type=float, default=0.30)
+    args = parser.parse_args()
+
     os.makedirs(EFF_DIR, exist_ok=True)
     user_params = chiedi_parametri_iniziali()
     
@@ -286,7 +290,7 @@ def main():
         img_drone = cv2.imread(path_drone)
         
         img_pil = Image.fromarray(cv2.cvtColor(img_patch, cv2.COLOR_BGR2RGB))
-        results = model.predict(img_pil, threshold=0.60)
+        results = model.predict(img_pil, threshold=args.threshold)
 
         if results is None or len(results.xyxy) == 0:
             memoria_analisi.append({"patch": path_patch, "img": img_patch, "dets": []})
