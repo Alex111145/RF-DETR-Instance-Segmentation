@@ -250,7 +250,7 @@ def disegna_risultati_efficienza(img, det_info):
 # ==============================================================================
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--threshold", type=float, default=0.30)
+    parser.add_argument("--threshold", type=float, default=0.70)
     args = parser.parse_args()
 
     os.makedirs(EFF_DIR, exist_ok=True)
