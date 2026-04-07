@@ -14,6 +14,7 @@ import urllib.parse
 from rasterio.warp import transform as transform_coords
 from PIL import Image, ExifTags
 from datetime import datetime
+from tqdm import tqdm
 
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 warnings.filterwarnings("ignore")
@@ -325,7 +326,7 @@ def main():
 
     print(f"[*] Elaborazione geometria su {len(pair_files)} patch...")
 
-    for i, pair_name in enumerate(pair_files):
+    for i, pair_name in enumerate(tqdm(pair_files, desc="Progresso patch", unit="patch")):
         orig_path = mappa_orig.get(pair_name)
         if not orig_path: continue
         
