@@ -7,6 +7,7 @@ import warnings
 import cv2
 import numpy as np
 from PIL import Image
+from tqdm import tqdm
 
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 warnings.filterwarnings("ignore")
@@ -19,21 +20,20 @@ BASE_DIR           = os.path.dirname(CURRENT_SCRIPT_DIR)
 
 WEIGHTS_PATH       = os.path.join(BASE_DIR, "weights.pt")
 OUTPUT_DIR         = os.path.join(BASE_DIR, "risultati_finali")
-# Ora l'input è la cartella "pair" generata dal primo script
 INPUT_DIR          = os.path.join(OUTPUT_DIR, "pair") 
 INFERENCE_DIR      = os.path.join(OUTPUT_DIR, "inferenza_pannelli")
 
-# Mappa colori BGR
+# Mappa colori BGR: 0=Rosso, 1&2=Verde
 COLOR_MAP = {
-    0: (0, 0, 255),    # Rosso -> Difettoso
-    1: (0, 200, 0),    # Verde -> Sano (ID standard)
-    2: (0, 200, 0),    # Verde -> Sano (ID rilevato)
+    0: (0, 255, 0),    # Rosso -> Difettoso
+    1: (0, 0, 255),    # Verde -> Sano
+    2: (0, 255, 0),    # Verde -> Sano
 }
 
 NAME_MAP = {
-    0: "Difettoso",
-    1: "Sano",
-    2: "Sano"
+    0: "SANO",
+    1: "DIFETTOSO",
+    2: "SANO"
 }
 
 def disegna_rilevamento(img, det_info):
@@ -47,36 +47,27 @@ def disegna_rilevamento(img, det_info):
         label      = f"{class_name} {score:.0%}"
 
         if d['mask'] is not None:
-            # Convertiamo la maschera booleana in immagine 8-bit
+            # Convertiamo maschera booleana in 8-bit
             mask_u8 = (d['mask'].astype(np.uint8)) * 255
-            
-            # Troviamo il contorno esatto della maschera
             contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             if contours:
-                # Prendiamo il contorno più grande
                 c_big = max(contours, key=cv2.contourArea)
-                
-                # Filtro area minima per evitare rumore
                 if cv2.contourArea(c_big) > 100:
-                    # DISEGNO DEL PERIMETRO REALE (non rettangolare se tagliato)
+                    # Disegno contorno
                     cv2.drawContours(canvas, [c_big], 0, color, 2)
                     
                     # Calcolo posizione etichetta (centroide)
                     M = cv2.moments(c_big)
-                    if M["m00"] != 0:
-                        tx = int(M["m10"] / M["m00"])
-                        ty = int(M["m01"] / M["m00"])
-                    else:
-                        # Fallback se il momento è zero (contorno molto sottile)
-                        tx, ty = c_big[0][0][0], c_big[0][0][1]
+                    tx, ty = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])) if M["m00"] != 0 else (c_big[0][0][0], c_big[0][0][1])
                     
-                    cv2.putText(canvas, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+                    # Testo con bordo nero per leggibilità
+                    cv2.putText(canvas, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 3, cv2.LINE_AA)
+                    cv2.putText(canvas, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
         else:
-            # Se non c'è maschera, usa il classico rettangolo XYXY
             x1, y1, x2, y2 = d['xyxy']
             cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(canvas, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+            cv2.putText(canvas, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
             
     return canvas
 
@@ -84,23 +75,24 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", default=INPUT_DIR)
     parser.add_argument("--output", default=INFERENCE_DIR)
-    parser.add_argument("--threshold", type=float, default=0.70)
+    parser.add_argument("--threshold", type=float, default=0.50) # Soglia leggermente più permissiva
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
-        print(f"ERRORE: Cartella {args.input} non trovata. Esegui prima lo script di registrazione.")
+        print(f"ERRORE: Cartella {args.input} non trovata.")
         return
 
     os.makedirs(args.output, exist_ok=True)
     
+    # IMPORTANTE: num_classes deve essere 3 come rilevato dal tensore
     from rfdetr import RFDETRSegLarge
-    model = RFDETRSegLarge(pretrain_weights=WEIGHTS_PATH, num_classes=2)
+    print("[*] Caricamento modello (3 classi)...")
+    model = RFDETRSegLarge(pretrain_weights=WEIGHTS_PATH, num_classes=3)
 
-    # Cerca esplicitamente solo i file che terminano con "_patch.jpg"
     files = sorted(glob.glob(os.path.join(args.input, "*_patch.jpg")))
-    print(f"[*] Elaborazione di {len(files)} patch estratte dalla cartella pair...")
+    print(f"[*] Analisi di {len(files)} patch...")
 
-    for i, path in enumerate(files):
+    for path in tqdm(files, desc="Inferenza"):
         img_bgr = cv2.imread(path)
         if img_bgr is None: continue
         
@@ -114,15 +106,14 @@ def main():
                     'class_id': int(results.class_id[k]),
                     'score': float(results.confidence[k]),
                     'xyxy': results.xyxy[k].astype(int),
-                    'mask': results.mask[k] if results.mask is not None else None
+                    'mask': results.mask[k] if hasattr(results, 'mask') and results.mask is not None else None
                 })
 
         if lista_det:
             annotata = disegna_rilevamento(img_bgr, lista_det)
-            # Salva mantenendo il nome del file originale (es: det_pair1_patch.jpg)
             cv2.imwrite(os.path.join(args.output, f"det_{os.path.basename(path)}"), annotata)
 
-    print(f"\n[FINE] Fatto! Ora i perimetri seguono esattamente la maschera rilevata. Salvati in: {args.output}")
+    print(f"\n[FINE] Elaborazione completata. Risultati in: {args.output}")
 
 if __name__ == "__main__":
     main()
