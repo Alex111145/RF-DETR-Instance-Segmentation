@@ -71,19 +71,19 @@ chmod +x /root/RF-DETR-Instance-Segmentation/sdk/linux/dji_irp
 
 ```bash
 # 1. Crea l'ambiente virtuale nella cartella del progetto
-python3 -m venv .venv
+python3 -m venv .env
 
 # 2. Attivalo (Linux/macOS)
-source .venv/bin/activate
+source .env/bin/activate
 
 # 3. Attivalo (Windows)
-.venv\Scripts\activate
+.env\Scripts\activate
 
 # 4. Aggiorna pip
 pip install --upgrade pip
 
 # 5. Installa le dipendenze
-pip install -r requirements.txt
+pip install -r RF-DETR-Instance-Segmentation/requirements.txt
 ```
 
 > **Nota su rfdetr:** se il pacchetto non è su PyPI nella versione richiesta, installalo da sorgente o da wheel fornita dal progetto:
