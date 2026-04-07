@@ -57,10 +57,10 @@ Prima di avviare la pipeline, rendi eseguibile il binario DJI e registra le libr
 chmod +x /root/RF-DETR-Instance-Segmentation/sdk/linux/dji_irp
 
 # Copia le librerie .so nella directory di sistema
-sudo cp /root/RF-DETR-Instance-Segmentation/sdk/linux/*.so* /usr/lib/
+ cp /root/RF-DETR-Instance-Segmentation/sdk/linux/*.so* /usr/lib/
 
 # Aggiorna la cache del linker
-sudo ldconfig
+ ldconfig
 ```
 
 > Questi passaggi sono necessari per gli Step 3 e 4. Se non vengono eseguiti, gli script ricadono automaticamente sul parsing binario RAW (Strategia 1), che funziona per la maggior parte dei sensori DJI standard (640×512).
