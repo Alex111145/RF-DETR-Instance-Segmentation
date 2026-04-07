@@ -124,9 +124,9 @@ python Step_0_patch.py --input ../ortomosaicoir.tif --output ../training_patches
 python Step_0_patch.py --input ../ortomosaicoir.tif --output ../training_patches_ir --no-gui
 
 # Con parametri personalizzati
-python Step_0_patch.py --input ../ortomosaicoir.tif --output ../training_patches_ir --tile 640 --overlap 0.20
+python Step_0_patch.py --input ../ortomosaicoir.tif --output ../training_patches_ir --tile 640 --overlap 0.20 --no-gui
 ```
-**Cosa fa:** Legge l'ortomosaico IR, mostra una finestra OpenCV dove puoi cliccare 4 punti per delimitare l'area dell'impianto (premi `C` per confermare, `R` per resettare, `ESC` per tagliare tutto). Divide l'immagine in tile 640×640 px con overlap configurabile (default 20%), scartando le patch con meno del 20% di pixel non-neri (bordi neri del mosaico). Salva i file con nome `tile_col_X_row_Y.jpg`, dove X e Y sono gli offset in pixel — necessari negli step successivi per riproiettare le coordinate.
+**Cosa fa:** Legge l'ortomosaico IR, mostra una finestra OpenCV dove puoi cliccare 4 punti per delimitare l'area dell'impianto (premi `C` per confermare, `R` per resettare, `ESC` per tagliare tutto). Divide l'immagine in tile 640×640 px con overlap configurabile (default 50%), scartando le patch con meno del 20% di pixel non-neri (bordi neri del mosaico). Salva i file con nome `tile_col_X_row_Y.jpg`, dove X e Y sono gli offset in pixel — necessari negli step successivi per riproiettare le coordinate.
 
 **Argomenti:**
 | Argomento | Default | Descrizione |
