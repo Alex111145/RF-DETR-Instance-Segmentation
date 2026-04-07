@@ -283,7 +283,12 @@ def main():
     memoria_analisi = [] 
     max_eta_assoluta_sani = 0.0
     
-    for path_patch in patch_files:
+    n_totale = len(patch_files)
+    for i_patch, path_patch in enumerate(patch_files, 1):
+        pct = int(i_patch / n_totale * 30)
+        barra = "[" + "#" * pct + "-" * (30 - pct) + "]"
+        print(f"\r  {barra} {i_patch}/{n_totale} - {os.path.basename(path_patch):<40}", end="", flush=True)
+
         img_patch = cv2.imread(path_patch)
         if img_patch is None: continue
         path_drone = path_patch.replace("_patch.jpg", "_drone.jpg")
@@ -343,6 +348,8 @@ def main():
             
         memoria_analisi.append({"patch": path_patch, "img": img_patch, "dets": patch_dets})
 
+    print()  # Newline dopo la barra di avanzamento FASE 1
+
     if max_eta_assoluta_sani == 0.0:
         for elemento in memoria_analisi:
             for d in elemento["dets"]:
@@ -359,7 +366,12 @@ def main():
     ]
     csv_rows = []
 
-    for elemento in memoria_analisi:
+    n_elementi = len(memoria_analisi)
+    for i_el, elemento in enumerate(memoria_analisi, 1):
+        pct2 = int(i_el / n_elementi * 30)
+        barra2 = "[" + "#" * pct2 + "-" * (30 - pct2) + "]"
+        print(f"\r  {barra2} {i_el}/{n_elementi} - {os.path.basename(elemento['patch']):<40}", end="", flush=True)
+
         path_patch = elemento["patch"]
         img_patch = elemento["img"]
         dets = elemento["dets"]
@@ -392,6 +404,8 @@ def main():
             annotata = disegna_risultati_efficienza(img_patch, lista_draw)
             out_name = os.path.basename(path_patch).replace("_patch", "_eff")
             cv2.imwrite(os.path.join(EFF_DIR, out_name), annotata)
+
+    print()  # Newline dopo la barra di avanzamento FASE 2
 
     if csv_rows:
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
