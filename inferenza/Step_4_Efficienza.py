@@ -1,4 +1,3 @@
-
 import os
 import re
 import json
@@ -20,10 +19,6 @@ GAMMA       = -0.0042
 EPSILON     = 0.90
 T_AMB       = 25.0
 
-# Raggio della finestra locale (in frazione dell'estensione totale del campo).
-# 0.25 = ogni pannello viene confrontato con i vicini entro il 25% della dimensione del campo.
-# Abbassa il valore se est/sud sono molto ravvicinati; alzalo se il campo è piccolo.
-FRAZIONE_RAGGIO_LOCALE = 0.25
 
 
 def estrai_metadati_da_drone():
@@ -110,10 +105,7 @@ def parse_pair_num(img_name):
 
 
 def carica_pair_to_offset():
-    """
-    Legge i file nella cartella registrazione_allineamento e ricostruisce
-    la mappa pair_N → (col_off, row_off), identica a quella usata in Step 5.
-    """
+    """Ricostruisce pair_N → (col_off, row_off) dalla cartella di registrazione."""
     import glob
     reg_dir = os.path.join(BASE_DIR, "risultati_finali", "registrazione_allineamento")
     mapping = {}
@@ -124,37 +116,100 @@ def carica_pair_to_offset():
     return mapping
 
 
-def eta_rif_locale(col, row, sani_map):
+ANGLE_GAP   = 15.0   # gradi — max differenza d'angolo nella stessa falda
+SPATIAL_GAP = 800    # pixel — max distanza tra patch della stessa falda
+
+def roof_zone_mapping(pair_to_offset, db_pannelli):
     """
-    Riferimento di efficienza locale per un pannello in posizione (col, row).
-
-    Logica:
-    - Cerca tutti i pannelli sani (non hotspot) entro una finestra spaziale
-      pari a FRAZIONE_RAGGIO_LOCALE * estensione_campo in X e Y.
-    - Restituisce il MAX di efficienza in quella finestra: corrisponde al
-      pannello più freddo (più pulito) della stessa zona di esposizione.
-    - Se la finestra è vuota (zona isolata) usa il max globale come fallback.
-
-    Effetto: pannelli sud caldi ma uniformi → riferimento = miglior pannello
-    sud → appaiono sani. Pannello sporco (più caldo dei vicini) → efficienza
-    inferiore al riferimento locale → flaggato correttamente.
+    Determina le zone delle falde del tetto a livello di SINGOLO PANNELLO 
+    combinando angolazione e prossimità spaziale tramite Union-Find.
     """
-    if not sani_map:
-        return ETA_NOMINAL
+    panels_data = [] 
+    
+    for img_name, panels in db_pannelli.items():
+        m = re.search(r"pair(\d+)_", img_name)
+        if not m: continue
+        pair_num = int(m.group(1))
+        
+        if pair_num not in pair_to_offset:
+            continue
+            
+        col_off, row_off = pair_to_offset[pair_num]
+        
+        for idx, panel in enumerate(panels):
+            pts = panel.get("points")
+            if not pts or len(pts) < 3:
+                continue
+                
+            pts_arr = np.array(pts, dtype=np.float32)
+            rect = cv2.minAreaRect(pts_arr)
+            a = rect[2]
+            w, h = rect[1]
+            if w < h:
+                a += 90.0
+            a = a % 180.0  # CORRETTO: 180 gradi per distinguere orientamenti ortogonali
+            
+            M = cv2.moments(pts_arr)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"]) + col_off
+                cy = int(M["m01"] / M["m00"]) + row_off
+            else:
+                cx, cy = int(pts_arr[0][0]) + col_off, int(pts_arr[0][1]) + row_off
+                
+            panels_data.append({
+                "id": (img_name, idx),
+                "pair": pair_num,
+                "angle": a,
+                "cx": cx,
+                "cy": cy
+            })
 
-    cols = [c for c, r, _ in sani_map]
-    rows = [r for _, r, _ in sani_map]
+    if not panels_data:
+        print("[*] Nessun pannello trovato — zona unica.")
+        return {}
 
-    span_x = max(cols) - min(cols) if len(set(cols)) > 1 else 0
-    span_y = max(rows) - min(rows) if len(set(rows)) > 1 else 0
+    n = len(panels_data)
+    parent = list(range(n))
 
-    dx = span_x * FRAZIONE_RAGGIO_LOCALE if span_x > 0 else float('inf')
-    dy = span_y * FRAZIONE_RAGGIO_LOCALE if span_y > 0 else float('inf')
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
 
-    vicini = [e for c, r, e in sani_map
-              if abs(c - col) <= dx and abs(r - row) <= dy]
+    def union(x, y):
+        parent[find(x)] = find(y)
 
-    return max(vicini) if vicini else max(e for _, _, e in sani_map)
+    # Aggiunta barra di caricamento tqdm per il processo Union-Find
+    for i in tqdm(range(n), desc="Mappatura falde (Union-Find)"):
+        for j in range(i + 1, n):
+            pi, pj = panels_data[i], panels_data[j]
+            ad = abs(pi["angle"] - pj["angle"])
+            ad = min(ad, 180.0 - ad)  # Distanza circolare corretta su 180°
+            if ad > ANGLE_GAP:
+                continue
+                
+            dist_sq = (pi["cx"] - pj["cx"])**2 + (pi["cy"] - pj["cy"])**2
+            if dist_sq <= SPATIAL_GAP**2:
+                union(i, j)
+
+    from collections import defaultdict
+    comps = defaultdict(list)
+    for i in range(n):
+        comps[find(i)].append(panels_data[i])
+        
+    sorted_comps = sorted(comps.values(), key=len, reverse=True)
+
+    result = {}
+    print(f"\n[*] Zone (falde) rilevate: {len(sorted_comps)}")
+    
+    for zone_id, comp in enumerate(sorted_comps, 1):
+        angoli = [p["angle"] for p in comp]
+        print(f"    Zona {zone_id}: {len(comp)} pannelli, angolo medio = {np.mean(angoli):.1f}°")
+        for p in comp:
+            result[p["id"]] = zone_id
+
+    return result
 
 
 def calcola_efficienza_termodinamica(t_c):
@@ -201,32 +256,29 @@ def main():
     with open(json_in, "r") as f:
         db_termico = json.load(f)
 
-    # Mappa pair_N → (col_off, row_off) dalla cartella di registrazione
+    # Mappa pair_N → (col_off, row_off)
     pair_to_offset = carica_pair_to_offset()
-    print(f"[*] Offset spaziali caricati: {len(pair_to_offset)} pair trovati nella registrazione")
+    print(f"[*] Pair caricati: {len(pair_to_offset)}")
 
-    # ── Prima passata: mappa spaziale dei pannelli sani ──────────────────────
-    # Raccoglie (col_off, row_off, eta_assoluta) per ogni pannello non-hotspot.
-    # Il MAX locale di questa mappa diventa il riferimento per la zona corrispondente,
-    # separando automaticamente cluster con esposizioni diverse (est / sud / ecc.).
-    sani_map = []
+    pair_to_zone = roof_zone_mapping(pair_to_offset, db_termico)
+
+    # ── Prima passata: efficienza pannelli sani per zona ─────────────────────
+    sani_per_zona = {}   # zone_id → [eta_abs, ...]
     for img_name, rilevamenti in db_termico.items():
-        pair_num = parse_pair_num(img_name)
-        if pair_num not in pair_to_offset:
-            continue
-        col_off, row_off = pair_to_offset[pair_num]
-        for d in rilevamenti:
+        for i, d in enumerate(rilevamenti):
+            zone_id  = pair_to_zone.get((img_name, i), 1)
             if d.get("class_id") != 1:
                 t = d.get("temp_media")
                 if t is not None:
-                    sani_map.append((col_off, row_off,
-                                     calcola_efficienza_termodinamica(t)))
+                    sani_per_zona.setdefault(zone_id, []).append(
+                        calcola_efficienza_termodinamica(t))
 
-    max_eta_globale = max(e for _, _, e in sani_map) if sani_map else ETA_NOMINAL
+    max_eta_per_zona = {z: max(etas) for z, etas in sani_per_zona.items()}
+    max_eta_globale  = max(max_eta_per_zona.values()) if max_eta_per_zona else ETA_NOMINAL
 
-    n_zone = len(set((c, r) for c, r, _ in sani_map))
-    print(f"[*] Riferimento locale attivo: {len(sani_map)} pannelli sani "
-          f"in {n_zone} posizioni — finestra {int(FRAZIONE_RAGGIO_LOCALE*100)}% del campo")
+    for z in sorted(max_eta_per_zona):
+        print(f"    Zona {z}: {len(sani_per_zona[z])} pannelli sani, "
+              f"max_eta = {max_eta_per_zona[z]:.4f}")
 
     dati_step4 = {}
 
@@ -235,18 +287,13 @@ def main():
         canvas = cv2.imread(img_path)
         if canvas is None: continue
 
-        # Riferimento locale per questa patch
-        pair_num = parse_pair_num(img_name)
-        if pair_num in pair_to_offset and sani_map:
-            col_off, row_off = pair_to_offset[pair_num]
-            max_eta_rif = eta_rif_locale(col_off, row_off, sani_map)
-        else:
-            max_eta_rif = max_eta_globale
-
         overlay = canvas.copy()
         analisi_patch = []
 
         for i, d in enumerate(rilevamenti):
+            zone_id     = pair_to_zone.get((img_name, i), 1)
+            max_eta_rif = max_eta_per_zona.get(zone_id, max_eta_globale)
+
             t_rif = d.get("temp_utilizzata")
             if t_rif is None:
                 t_rif = d.get("temp_max") if d.get("class_id") == 1 else d.get("temp_media")
@@ -300,7 +347,8 @@ def main():
                 "id": i + 1,
                 "label": d.get("label"),
                 "salute": round(salute_rel, 2),
-                "temp": round(t_rif, 2) if t_rif != 0.0 else None
+                "temp": round(t_rif, 2) if t_rif != 0.0 else None,
+                "zona": int(zone_id)
             })
 
         cv2.addWeighted(overlay, 0.3, canvas, 0.7, 0, canvas)
