@@ -89,7 +89,7 @@ def get_pvgis_data(lat, lon):
         return 3.18, 300
 
 ANGLE_GAP     = 15.0   
-SPATIAL_GAP   = 800    
+SPATIAL_GAP   =200    
 MIN_ZONE_SIZE = 12      
 
 def roof_zone_mapping(pair_to_offset, db_pannelli):
