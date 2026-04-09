@@ -36,10 +36,12 @@ MAPPA_IR_OUT_PATH  = os.path.join(OUTPUT_DIR, "mappa_efficienza_ir.tif")
 PDF_OUT_PATH    = os.path.join(OUTPUT_DIR, "report_tecnico.pdf")
 CSV_UNICI       = os.path.join(OUTPUT_DIR, "report_pannelli_unici.csv")
 
-# Parametri Economici (Standard se non diversamente specificato)
-COSTO_KWH       = 0.40
-GIORNI_UTIL      = 300
-SOGLIA_AREA_PX  = 10000 
+# Parametri Economici (Nuova formula ponderata)
+COSTO_KWH_ACQUISTO = 0.40   # Quota autoconsumata (risparmio in bolletta)
+COSTO_KWH_VENDITA  = 0.10   # Quota immessa in rete (vendita GSE)
+PCT_AUTOCONSUMO    = 0.40   # 40% autoconsumo, 60% immissione in rete
+GIORNI_UTIL        = 300
+SOGLIA_AREA_PX     = 10000 
 
 # Palette Colori A2A (BGR)
 C_PRIMARY = (159, 91, 0)   
@@ -95,7 +97,7 @@ def get_pvgis_data(lat, lon):
     - giorni_utili : giorni/anno con irraggiamento medio >= 1.5 kWh/m²/giorno
     """
     GIORNI_MESE = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    SOGLIA_HID  = 1.5   # kWh/m²/giorno — sotto questa soglia il mese è trascurabile
+    SOGLIA_HID  = 1.5   
     try:
         url = (f"https://re.jrc.ec.europa.eu/api/v5_2/PVcalc?"
                f"lat={lat}&lon={lon}&peakpower=1&loss=14&outputformat=json")
@@ -139,10 +141,6 @@ def disegna_grafico_a_ciambella(canvas, cx, cy, r, eta_media_pct):
     cv2.putText(canvas, label, (cx - tw//2, cy + th//2), cv2.FONT_HERSHEY_SIMPLEX, 1.8, C_TEXT, 4, cv2.LINE_AA)
 
 def correggi_deriva_locale(rgb_canvas, m_cnt):
-    """
-    Estrae una regione attorno alla maschera calcolata, identifica il vero pannello
-    fotovoltaico (area scura) e fa "snappare" (sposta) la maschera per sovrapporla correttamente.
-    """
     pts = m_cnt.reshape(-1, 2)
     x_min, y_min = np.min(pts, axis=0)
     x_max, y_max = np.max(pts, axis=0)
@@ -153,8 +151,6 @@ def correggi_deriva_locale(rgb_canvas, m_cnt):
         return m_cnt
         
     cx, cy = x_min + w//2, y_min + h//2
-    
-    # Crea una ROI allargata per catturare il pannello anche se è sfalsato
     pad_x, pad_y = int(w * 0.8), int(h * 0.8) 
     h_canvas, w_canvas = rgb_canvas.shape[:2]
     
@@ -166,15 +162,11 @@ def correggi_deriva_locale(rgb_canvas, m_cnt):
     roi = rgb_canvas[y1:y2, x1:x2]
     if roi.size == 0: return m_cnt
     
-    # Isolamento dei pannelli (solitamente rettangoli scuri con bordi chiari)
     gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    
-    # Operazione morfologica per chiudere i buchi dentro ai pannelli
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-    
     contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     area_attesa = w * h
@@ -184,7 +176,6 @@ def correggi_deriva_locale(rgb_canvas, m_cnt):
     
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        # Il contorno deve essere comparabile alla grandezza calcolata dalla maschera
         if area_attesa * 0.4 < area < area_attesa * 1.6:
             M = cv2.moments(cnt)
             if M["m00"] != 0:
@@ -197,11 +188,8 @@ def correggi_deriva_locale(rgb_canvas, m_cnt):
                     miglior_centro = (cX_local, cY_local)
     
     if miglior_centro is not None:
-        # Trasla la maschera al centro reale trovato
         shift_x = miglior_centro[0] - roi_cx_local
         shift_y = miglior_centro[1] - roi_cy_local
-        
-        # Sicurezza: limitiamo lo scostamento per evitare "scatti" verso altri tetti/strutture
         if abs(shift_x) < w and abs(shift_y) < h:
             shift_array = np.array([shift_x, shift_y], dtype=np.int32)
             return m_cnt + shift_array
@@ -220,9 +208,9 @@ def genera_report_pdf_a2a(dati, pdf_path):
     col1_x, col2_x = 80, 650
     y_cursor = 250
     
-    # Sezione Statistiche
-    cv2.putText(canvas, "STATISTICHE IMPIANTO", (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_TEXT, 2)
-    y_cursor += 60
+    # Sezione Statistiche (Ingrandita)
+    cv2.putText(canvas, "STATISTICHE IMPIANTO", (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 1.1, C_TEXT, 3)
+    y_cursor += 70
     rows = [
         ("Totale Moduli Rilevati", str(dati['tot_pannelli']), C_TEXT),
         ("Moduli Ottimali (Verde)", str(dati['tot_sani']), C_SUCCESS),
@@ -230,44 +218,32 @@ def genera_report_pdf_a2a(dati, pdf_path):
         ("Moduli Critici (Rosso)", str(dati['tot_rotti']), C_DANGER)
     ]
     for label, val, color in rows:
-        cv2.putText(canvas, label, (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (120, 120, 120), 1)
-        cv2.putText(canvas, val, (col1_x + 350, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-        y_cursor += 45
+        cv2.putText(canvas, label, (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (120, 120, 120), 2)
+        cv2.putText(canvas, val, (col1_x + 400, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        y_cursor += 50
 
-    # Grafico Ciambella
-    disegna_grafico_a_ciambella(canvas, col2_x + 250, 400, 140, dati['eta_media_impianto'])
+    # Grafico Ciambella (adattato alla nuova spaziatura)
+    disegna_grafico_a_ciambella(canvas, col2_x + 250, 420, 150, dati['eta_media_impianto'])
 
-    # Perdite Economiche
-    y_cursor = 700
-    box_h = 270
+    # Perdite Economiche (Unico Blocco Centrale)
+    y_cursor = 730
+    box_h = 160
     cv2.rectangle(canvas, (col1_x, y_cursor), (w-80, y_cursor+box_h), C_LIGHT, -1)
-    
-    # Modificato in C_DANGER poichè conteggia solo le rotture critiche
     cv2.rectangle(canvas, (col1_x, y_cursor), (col1_x+10, y_cursor+box_h), C_DANGER, -1) 
-    cv2.putText(canvas, "STIMA MANCATO GUADAGNO ANNUO", (col1_x + 40, y_cursor + 45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, C_TEXT, 2)
-
-    # Riga 1 – Pannelli difettosi
-    cv2.putText(canvas, "Pannelli Difettosi (Rosso):", (col1_x + 40, y_cursor + 105), cv2.FONT_HERSHEY_SIMPLEX, 0.65, C_DANGER, 1)
-    cv2.putText(canvas, f"EUR {dati['perdita_euro_difettosi']:.2f}", (col1_x + 400, y_cursor + 105), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_DANGER, 2)
-
-    # RIGA PANNELLI SPORCHI COMPLETAMENTE RIMOSSA
-
-    # Separatore verticale + Blocco TOTALE a destra
-    sep_x = 680
-    cv2.line(canvas, (sep_x, y_cursor + 20), (sep_x, y_cursor + box_h - 20), (180, 180, 180), 2)
-    tot_x = sep_x + 30
-    cv2.putText(canvas, "TOTALE MANCATO GUADAGNO", (tot_x, y_cursor + 100), cv2.FONT_HERSHEY_SIMPLEX, 0.65, C_TEXT, 1)
     
-    # Colorato di C_DANGER per continuità
-    cv2.putText(canvas, f"EUR {dati['perdita_euro_totale']:.2f}", (tot_x, y_cursor + 195), cv2.FONT_HERSHEY_SIMPLEX, 1.5, C_DANGER, 4)
+    cv2.putText(canvas, "STIMA MANCATO GUADAGNO ANNUO", (col1_x + 40, y_cursor + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_TEXT, 2)
+    
+    # Singola riga totale per i difettosi
+    cv2.putText(canvas, "Perdita Totale (Moduli Difettosi):", (col1_x + 40, y_cursor + 115), cv2.FONT_HERSHEY_SIMPLEX, 0.8, C_DANGER, 2)
+    cv2.putText(canvas, f"EUR {dati['perdita_euro_totale']:.2f}", (col1_x + 450, y_cursor + 115), cv2.FONT_HERSHEY_SIMPLEX, 1.4, C_DANGER, 3)
 
     # Top 5 Moduli
-    y_cursor += 340
+    y_cursor += box_h + 80
     cv2.putText(canvas, "TOP 5 MODULI CRITICI (DA SOSTITUIRE)", (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_DANGER, 2)
     y_cursor += 50
     for wp in dati['worst_panels']:
-        txt = f"ID #{wp['id']} - Salute: {wp['eta']:.1f}% - kWh persi/anno: {wp['kwh_persi']:.1f} - EUR {wp['euro_persi']:.2f}/anno"
-        cv2.putText(canvas, txt, (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_TEXT, 1)
+        txt = f"ID #{wp['id']} - Salute: {wp['eta']:.1f}% - kWh persi/anno: {wp['kwh_persi']:.1f} - EUR {wp['euro_persi']:.2f}"
+        cv2.putText(canvas, txt, (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.65, C_TEXT, 1)
         y_cursor += 40
 
     # Footer
@@ -382,17 +358,23 @@ def main():
             # 4. CORREZIONE DERIVA (SNAPPING SULL'IMMAGINE)
             m_cnt = correggi_deriva_locale(rgb_canvas, m_cnt)
 
-            # Ricalcolo centroide corretto (utile per label e filtri)
+            # Ricalcolo centroide corretto
             M_rgb = cv2.moments(m_cnt)
             cx_corr = int(M_rgb["m10"]/M_rgb["m00"]) if M_rgb["m00"] != 0 else cx
             cy_corr = int(M_rgb["m01"]/M_rgb["m00"]) if M_rgb["m00"] != 0 else cy
 
-            # Calcolo economico (SOLO PER DIFETTOSI, i gialli restano 0.0)
+            # --- NUOVO CALCOLO ECONOMICO (PONDERATO) ---
             if d_json["label"] == "DIFETTOSO":
                 p_max = 350 # Watt nominali stimati per pannello
                 p_persa = p_max * (1 - (d_json["salute"]/100))
                 kwh_persi_anno = (p_persa / 1000) * esh * giorni_utili
-                euro_p = kwh_persi_anno * COSTO_KWH
+                
+                # Scomposizione tra Autoconsumo e Rete Elettrica
+                quota_autoconsumo = kwh_persi_anno * PCT_AUTOCONSUMO
+                quota_rete = kwh_persi_anno * (1.0 - PCT_AUTOCONSUMO)
+                
+                # Formula aggiornata
+                euro_p = (quota_autoconsumo * COSTO_KWH_ACQUISTO) + (quota_rete * COSTO_KWH_VENDITA)
             else:
                 kwh_persi_anno = 0.0
                 euro_p = 0.0
@@ -406,7 +388,7 @@ def main():
                 'euro_persi': euro_p, 'stato': d_json["label"]
             })
 
-    # Filtro area: calcola area media IR e rimuove maschere sotto la media
+    # Filtro area
     if pannelli_globali:
         aree_ir = np.array([cv2.contourArea(p['ir_contour']) for p in pannelli_globali], dtype=np.float32)
         area_media = float(np.mean(aree_ir))
@@ -458,7 +440,6 @@ def main():
 
     # Generazione Report PDF
     perdita_difettosi = sum(p['euro_persi'] for p in unici if p['stato'] == "DIFETTOSO")
-    perdita_sporchi   = 0.0 
     
     dati_rep = {
         'tot_pannelli': len(unici),
@@ -467,7 +448,6 @@ def main():
         'tot_rotti':     len([p for p in unici if p['stato'] == "DIFETTOSO"]),
         'eta_media_impianto': np.mean([p['eta'] for p in unici]) if unici else 0,
         'perdita_euro_difettosi': perdita_difettosi,
-        'perdita_euro_sporchi':   perdita_sporchi,
         'perdita_euro_totale':    perdita_difettosi,
         'worst_panels': sorted([p for p in unici if p['stato'] == "DIFETTOSO"], key=lambda x: x['eta'])[:5]
     }
