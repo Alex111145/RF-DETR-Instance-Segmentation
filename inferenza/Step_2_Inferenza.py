@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 import os
 import sys
 import glob
@@ -12,9 +12,7 @@ from tqdm import tqdm
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 warnings.filterwarnings("ignore")
 
-# ==============================================================================
-# CONFIGURAZIONE
-# ==============================================================================
+
 CURRENT_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR           = os.path.dirname(CURRENT_SCRIPT_DIR)
 
@@ -23,11 +21,11 @@ OUTPUT_DIR         = os.path.join(BASE_DIR, "risultati_finali")
 INPUT_DIR          = os.path.join(OUTPUT_DIR, "pair") 
 INFERENCE_DIR      = os.path.join(OUTPUT_DIR, "inferenza_pannelli")
 
-# Mappa colori BGR: 0=Rosso, 1&2=Verde
+
 COLOR_MAP = {
-    0: (0, 255, 0),    # Rosso -> Difettoso
-    1: (0, 0, 255),    # Verde -> Sano
-    2: (0, 255, 0),    # Verde -> Sano
+    0: (0, 255, 0),    
+    1: (0, 0, 255),    
+    2: (0, 255, 0),    
 }
 
 NAME_MAP = {
@@ -47,21 +45,21 @@ def disegna_rilevamento(img, det_info):
         label      = f"{class_name} {score:.0%}"
 
         if d['mask'] is not None:
-            # Convertiamo maschera booleana in 8-bit
+        
             mask_u8 = (d['mask'].astype(np.uint8)) * 255
             contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             if contours:
                 c_big = max(contours, key=cv2.contourArea)
                 if cv2.contourArea(c_big) > 100:
-                    # Disegno contorno
+                  
                     cv2.drawContours(canvas, [c_big], 0, color, 2)
                     
-                    # Calcolo posizione etichetta (centroide)
+                  
                     M = cv2.moments(c_big)
                     tx, ty = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])) if M["m00"] != 0 else (c_big[0][0][0], c_big[0][0][1])
                     
-                    # Testo con bordo nero per leggibilità
+                   
                     cv2.putText(canvas, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 3, cv2.LINE_AA)
                     cv2.putText(canvas, label, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
         else:
@@ -75,7 +73,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", default=INPUT_DIR)
     parser.add_argument("--output", default=INFERENCE_DIR)
-    parser.add_argument("--threshold", type=float, default=0.50) # Soglia leggermente più permissiva
+    parser.add_argument("--threshold", type=float, default=0.50) 
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
@@ -83,8 +81,7 @@ def main():
         return
 
     os.makedirs(args.output, exist_ok=True)
-    
-    # IMPORTANTE: num_classes deve essere 3 come rilevato dal tensore
+ 
     from rfdetr import RFDETRSegLarge
     print("[*] Caricamento modello (3 classi)...")
     model = RFDETRSegLarge(pretrain_weights=WEIGHTS_PATH, num_classes=3)

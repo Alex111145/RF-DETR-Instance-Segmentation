@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 import os
 import sys
 import re
@@ -7,31 +7,27 @@ import warnings
 import cv2
 import numpy as np
 import rasterio
-import shutil  # <--- Aggiunto per copiare i file senza perdite
+import shutil  
 from rasterio.warp import transform as transform_coords
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
 
-# Silenzia log di sistema superflui
+
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 warnings.filterwarnings("ignore")
 
-# ==============================================================================
-# CONFIGURAZIONE
-# ==============================================================================
+
 CURRENT_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR           = os.path.dirname(CURRENT_SCRIPT_DIR)
 
-INPUT_DIR          = os.path.join(BASE_DIR, "training_patches_ir")
+INPUT_DIR          = os.path.join(BASE_DIR, "risultati_finali", "training_patches_ir")
 DRONE_PHOTOS_DIR   = os.path.join(BASE_DIR, "foto_drone")
 MOSAIC_PATH        = os.path.join(BASE_DIR, "ortomosaicoir.tif")
 OUTPUT_DIR         = os.path.join(BASE_DIR, "risultati_finali")
 REGISTRATION_DIR   = os.path.join(OUTPUT_DIR, "registrazione_allineamento")
 PAIRS_DIR          = os.path.join(OUTPUT_DIR, "pair")
 
-# ==============================================================================
-# FUNZIONI GPS E METADATI
-# ==============================================================================
+
 def get_gps_from_exif(path):
     """Estrae Lat/Lon reali dai metadati EXIF della foto drone."""
     try:
@@ -54,54 +50,62 @@ def get_gps_from_exif(path):
                    to_dec(info['GPSLongitude'], info['GPSLongitudeRef'])
     except: return None
 
-# ==============================================================================
-# FUNZIONE DI ALLINEAMENTO (COMPUTER VISION)
-# ==============================================================================
+
+MIN_BBOX_LATO  = 80      # lato minimo (px) del bbox per considerare valido l'allineamento
+MIN_BBOX_AREA  = 15000   # area minima (px²) del bbox
+MIN_MATCHES    = 20      # numero minimo di match ORB richiesti
+
 def allinea_e_disegna(patch, drone_img):
-    """Trova la patch e disegna un rettangolo DRITTO sulla foto del drone."""
+    """Trova la patch nel drone tramite ORB+omografia.
+    Restituisce (patch_aligned, drone_annotata) se l'allineamento è valido,
+    oppure (None, None) se la corrispondenza è degenere o assente."""
     gray_p = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
     gray_d = cv2.cvtColor(drone_img, cv2.COLOR_BGR2GRAY)
 
-    # Feature Matching con ORB
     orb = cv2.ORB_create(3000)
     kp1, des1 = orb.detectAndCompute(gray_p, None)
     kp2, des2 = orb.detectAndCompute(gray_d, None)
 
     if des1 is None or des2 is None:
-        return patch, drone_img
+        return None, None
 
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
     matches = bf.match(des1, des2)
     matches = sorted(matches, key=lambda x: x.distance)
 
-    if len(matches) > 15:
-        src_pts = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
-        dst_pts = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
-        
-        M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-        
-        if M is not None:
-            h, w = gray_p.shape
-            pts = np.float32([[0, 0], [0, h-1], [w-1, h-1], [w-1, 0]]).reshape(-1, 1, 2)
-            dst = cv2.perspectiveTransform(pts, M)
-            
-            x, y, bw, bh = cv2.boundingRect(np.int32(dst))
-            
-            drone_annotata = drone_img.copy()
-            cv2.rectangle(drone_annotata, (x, y), (x + bw, y + bh), (0, 255, 0), 12)
-            
-            y1, y2 = max(0, y), min(drone_img.shape[0], y+bh)
-            x1, x2 = max(0, x), min(drone_img.shape[1], x+bw)
-            patch_aligned = drone_img[y1:y2, x1:x2]
-            
-            if patch_aligned.size > 0:
-                return patch_aligned, drone_annotata
-            
-    return patch, drone_img
+    if len(matches) < MIN_MATCHES:
+        return None, None
 
-# ==============================================================================
-# MAIN PIPELINE
-# ==============================================================================
+    src_pts = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
+    dst_pts = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
+
+    M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+    if M is None:
+        return None, None
+
+    h, w = gray_p.shape
+    pts = np.float32([[0, 0], [0, h-1], [w-1, h-1], [w-1, 0]]).reshape(-1, 1, 2)
+    dst = cv2.perspectiveTransform(pts, M)
+
+    x, y, bw, bh = cv2.boundingRect(np.int32(dst))
+
+    # Scarta allineamenti degeneri (bbox troppo piccolo o striscia sottile)
+    if bw < MIN_BBOX_LATO or bh < MIN_BBOX_LATO or bw * bh < MIN_BBOX_AREA:
+        return None, None
+
+    drone_annotata = drone_img.copy()
+    cv2.rectangle(drone_annotata, (x, y), (x + bw, y + bh), (0, 255, 0), 12)
+
+    y1, y2 = max(0, y), min(drone_img.shape[0], y + bh)
+    x1, x2 = max(0, x), min(drone_img.shape[1], x + bw)
+    patch_aligned = drone_img[y1:y2, x1:x2]
+
+    if patch_aligned.size == 0:
+        return None, None
+
+    return patch_aligned, drone_annotata
+
+
 def main():
     os.makedirs(REGISTRATION_DIR, exist_ok=True)
     os.makedirs(PAIRS_DIR, exist_ok=True)
@@ -131,17 +135,22 @@ def main():
     FONT_COLOR = (0, 255, 0)
     FONT_THICKNESS = 2
 
+    salvate = 0
+    scartate = 0
+    pair_idx = 0  # indice progressivo solo per le coppie valide
+
     for i, p_path in enumerate(patch_files):
         filename = os.path.basename(p_path)
         img_patch = cv2.imread(p_path)
-        if img_patch is None: continue
+        if img_patch is None:
+            continue
 
         m = re.search(r"tile_col_(\d+)_row_(\d+)", filename)
-        if not m: continue
-        
+        if not m:
+            continue
+
         px_x, px_y = int(m.group(1)) + 320, int(m.group(2)) + 320
         east, north = mosaic_transform * (px_x, px_y)
-        
         lons, lats = transform_coords(mosaic_crs, 'EPSG:4326', [east], [north])
         p_lat, p_lon = lats[0], lons[0]
 
@@ -152,10 +161,18 @@ def main():
 
         patch_res, drone_res = allinea_e_disegna(img_patch, img_drone)
 
+        # Scarta coppie con allineamento degenere (bbox troppo piccolo)
+        if patch_res is None:
+            scartate += 1
+            print(f"[{i+1}/{len(patch_files)}] SCARTATA: {filename} (allineamento non valido)", flush=True)
+            continue
+
+        pair_idx += 1
+        pair_prefix = f"pair{pair_idx}"
+
         H_CONTENT = 800
         p_h, p_w = patch_res.shape[:2]
         d_h, d_w = drone_res.shape[:2]
-        
         p_resized = cv2.resize(patch_res, (int(p_w * (H_CONTENT / p_h)), H_CONTENT))
         d_resized = cv2.resize(drone_res, (int(d_w * (H_CONTENT / d_h)), H_CONTENT))
 
@@ -163,36 +180,27 @@ def main():
         c_h, c_w = combined_content.shape[:2]
 
         header_canvas = np.zeros((HEADER_H, c_w, 3), dtype=np.uint8)
-        header_canvas[:] = (0, 0, 0)
-
         text_sx = f"Patch: {filename}"
         text_dx = f"Drone: {drone_filename}"
         y_text = int(HEADER_H * 0.7)
-        
         cv2.putText(header_canvas, text_sx, (10, y_text), FONT, FONT_SCALE, FONT_COLOR, FONT_THICKNESS, cv2.LINE_AA)
-
         (tw_dx, _), _ = cv2.getTextSize(text_dx, FONT, FONT_SCALE, FONT_THICKNESS)
-        x_dx = c_w - tw_dx - 10
-        cv2.putText(header_canvas, text_dx, (x_dx, y_text), FONT, FONT_SCALE, FONT_COLOR, FONT_THICKNESS, cv2.LINE_AA)
+        cv2.putText(header_canvas, text_dx, (c_w - tw_dx - 10, y_text), FONT, FONT_SCALE, FONT_COLOR, FONT_THICKNESS, cv2.LINE_AA)
 
         final_image = np.vstack((header_canvas, combined_content))
 
-        # ID Univoco per questo ciclo
-        pair_prefix = f"pair{i+1}"
-
-        # 1. Salvataggio della foto affiancata per il controllo visivo (questa viene elaborata da OpenCV)
         out_path = os.path.join(REGISTRATION_DIR, f"{pair_prefix}_{filename}")
         cv2.imwrite(out_path, final_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        
-        # 2. Copia fisica dei file originali per preservare la risoluzione al 100%
-        # Usiamo shutil.copy per bypassare OpenCV ed evitare ricompressioni
         shutil.copy(p_path, os.path.join(PAIRS_DIR, f"{pair_prefix}_patch.jpg"))
         shutil.copy(drone_path, os.path.join(PAIRS_DIR, f"{pair_prefix}_drone.jpg"))
-        
-        print(f"[{i+1}/{len(patch_files)}] ALLINEATA: {filename} -> {drone_filename}", flush=True)
 
-    print(f"\n[FINE] Risultati registrazione in: {REGISTRATION_DIR}")
-    print(f"[FINE] Coppie separate (copia bit-a-bit) in: {PAIRS_DIR}")
+        salvate += 1
+        print(f"[{i+1}/{len(patch_files)}] ALLINEATA ({salvate} ok): {filename} -> {drone_filename}", flush=True)
+
+    print(f"\n[FINE] Coppie valide salvate : {salvate}")
+    print(f"[FINE] Coppie scartate       : {scartate}")
+    print(f"[FINE] Registrazione in      : {REGISTRATION_DIR}")
+    print(f"[FINE] Coppie (patch+drone)  : {PAIRS_DIR}")
 
 if __name__ == "__main__":
     main()

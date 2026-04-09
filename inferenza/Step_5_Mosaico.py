@@ -31,7 +31,8 @@ RGB_MOSAIC      = os.path.join(BASE_DIR, "ortomosaicorgb.tif")
 WEIGHTS_PATH    = os.path.join(BASE_DIR, "weights.pt")
 
 # Output finali
-MAPPA_OUT_PATH  = os.path.join(OUTPUT_DIR, "mappa_efficienza_rgb.tif")
+MAPPA_OUT_PATH     = os.path.join(OUTPUT_DIR, "mappa_efficienza_rgb.tif")
+MAPPA_IR_OUT_PATH  = os.path.join(OUTPUT_DIR, "mappa_efficienza_ir.tif")
 PDF_OUT_PATH    = os.path.join(OUTPUT_DIR, "report_tecnico.pdf")
 CSV_UNICI       = os.path.join(OUTPUT_DIR, "report_pannelli_unici.csv")
 
@@ -48,12 +49,13 @@ C_DANGER  = (54, 67, 244)
 C_TEXT    = (50, 50, 50)   
 C_LIGHT   = (240, 245, 245) 
 
+# Colori in ordine RGB (canvas caricato da rasterio in RGB)
 COLOR_VERDE  = (0, 255, 0)
-COLOR_GIALLO = (0, 200, 255)
-COLOR_ROSSO  = (0, 0, 255)
+COLOR_GIALLO = (255, 255, 0)
+COLOR_ROSSO  = (255, 0, 0)
 
 # ==============================================================================
-# FUNZIONI DI SUPPORTO
+# FUNZIONI DI SUPPORTO E CORREZIONE DERIVA
 # ==============================================================================
 def get_pvgis_esh(lat, lon):
     try:
@@ -64,10 +66,19 @@ def get_pvgis_esh(lat, lon):
             return data["outputs"]["totals"]["fixed"]["E_y"] / 365.0
     except: return 3.18
 
-def determina_colore_rgb(eta_rel_pct):
-    if eta_rel_pct >= 90.0: return COLOR_VERDE
-    elif eta_rel_pct >= 80.0: return COLOR_GIALLO
-    else: return COLOR_ROSSO
+def testo_centrato(canvas, testo, cx, cy, colore, scala=0.55, spessore=1):
+    (tw, th), _ = cv2.getTextSize(testo, cv2.FONT_HERSHEY_SIMPLEX, scala, spessore)
+    tx, ty = cx - tw // 2, cy + th // 2
+    cv2.putText(canvas, testo, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, scala, (0,0,0), spessore + 2, cv2.LINE_AA)
+    cv2.putText(canvas, testo, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, scala, colore, spessore, cv2.LINE_AA)
+
+def determina_colore(salute_pct, label):
+    if label == "DIFETTOSO":
+        return COLOR_ROSSO
+    elif salute_pct < 90.0:
+        return COLOR_GIALLO
+    else:
+        return COLOR_VERDE
 
 def disegna_grafico_a_ciambella(canvas, cx, cy, r, eta_media_pct):
     cv2.circle(canvas, (cx+2, cy+5), r+2, (220, 220, 220), -1, cv2.LINE_AA)
@@ -78,6 +89,76 @@ def disegna_grafico_a_ciambella(canvas, cx, cy, r, eta_media_pct):
     label = f"{eta_media_pct:.1f}%"
     (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 1.8, 4)
     cv2.putText(canvas, label, (cx - tw//2, cy + th//2), cv2.FONT_HERSHEY_SIMPLEX, 1.8, C_TEXT, 4, cv2.LINE_AA)
+
+def correggi_deriva_locale(rgb_canvas, m_cnt):
+    """
+    Estrae una regione attorno alla maschera calcolata, identifica il vero pannello
+    fotovoltaico (area scura) e fa "snappare" (sposta) la maschera per sovrapporla correttamente.
+    """
+    pts = m_cnt.reshape(-1, 2)
+    x_min, y_min = np.min(pts, axis=0)
+    x_max, y_max = np.max(pts, axis=0)
+    
+    w = x_max - x_min
+    h = y_max - y_min
+    if w < 10 or h < 10:
+        return m_cnt
+        
+    cx, cy = x_min + w//2, y_min + h//2
+    
+    # Crea una ROI allargata per catturare il pannello anche se è sfalsato
+    pad_x, pad_y = int(w * 0.8), int(h * 0.8) 
+    h_canvas, w_canvas = rgb_canvas.shape[:2]
+    
+    x1 = max(0, cx - pad_x)
+    y1 = max(0, cy - pad_y)
+    x2 = min(w_canvas, cx + pad_x)
+    y2 = min(h_canvas, cy + pad_y)
+    
+    roi = rgb_canvas[y1:y2, x1:x2]
+    if roi.size == 0: return m_cnt
+    
+    # Isolamento dei pannelli (solitamente rettangoli scuri con bordi chiari)
+    gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # Operazione morfologica per chiudere i buchi dentro ai pannelli
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    area_attesa = w * h
+    miglior_centro = None
+    min_dist = float('inf')
+    roi_cx_local, roi_cy_local = cx - x1, cy - y1
+    
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        # Il contorno deve essere comparabile alla grandezza calcolata dalla maschera
+        if area_attesa * 0.4 < area < area_attesa * 1.6:
+            M = cv2.moments(cnt)
+            if M["m00"] != 0:
+                cX_local = int(M["m10"] / M["m00"])
+                cY_local = int(M["m01"] / M["m00"])
+                
+                dist = np.sqrt((cX_local - roi_cx_local)**2 + (cY_local - roi_cy_local)**2)
+                if dist < min_dist:
+                    min_dist = dist
+                    miglior_centro = (cX_local, cY_local)
+    
+    if miglior_centro is not None:
+        # Trasla la maschera al centro reale trovato
+        shift_x = miglior_centro[0] - roi_cx_local
+        shift_y = miglior_centro[1] - roi_cy_local
+        
+        # Sicurezza: limitiamo lo scostamento per evitare "scatti" verso altri tetti/strutture
+        if abs(shift_x) < w and abs(shift_y) < h:
+            shift_array = np.array([shift_x, shift_y], dtype=np.int32)
+            return m_cnt + shift_array
+            
+    return m_cnt
 
 # ==============================================================================
 # GENERAZIONE PDF
@@ -113,14 +194,14 @@ def genera_report_pdf_a2a(dati, pdf_path):
     cv2.rectangle(canvas, (col1_x, y_cursor), (w-80, y_cursor+150), C_LIGHT, -1)
     cv2.rectangle(canvas, (col1_x, y_cursor), (col1_x+10, y_cursor+150), C_WARNING, -1)
     cv2.putText(canvas, "STIMA MANCATO GUADAGNO ANNUO", (col1_x + 40, y_cursor + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, C_TEXT, 2)
-    cv2.putText(canvas, f"€ {dati['perdita_euro']:.2f}", (col1_x + 40, y_cursor + 110), cv2.FONT_HERSHEY_SIMPLEX, 1.8, C_WARNING, 4)
+    cv2.putText(canvas, f"EUR {dati['perdita_euro']:.2f}", (col1_x + 40, y_cursor + 110), cv2.FONT_HERSHEY_SIMPLEX, 1.8, C_WARNING, 4)
 
     # Top 5 Moduli
     y_cursor += 220
     cv2.putText(canvas, "TOP 5 MODULI CRITICI (DA SOSTITUIRE)", (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_DANGER, 2)
     y_cursor += 50
     for wp in dati['worst_panels']:
-        txt = f"ID #{wp['id']} - Salute: {wp['eta']:.1f}% - Perdita Stimata: € {wp['euro_persi']:.2f}"
+        txt = f"ID #{wp['id']} - Salute: {wp['eta']:.1f}% - Perdita Stimata: EUR {wp['euro_persi']:.2f}"
         cv2.putText(canvas, txt, (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_TEXT, 1)
         y_cursor += 40
 
@@ -136,74 +217,130 @@ def genera_report_pdf_a2a(dati, pdf_path):
 def main():
     print("\n" + "="*60 + "\n GENERAZIONE DIGITAL TWIN & REPORT FINALE \n" + "="*60)
 
+    JSON_TERMICA = os.path.join(OUTPUT_DIR, "analisi_termica", "analisi_dati.json")
+    if not os.path.exists(JSON_TERMICA):
+        print("[!] ERRORE: Esegui prima lo Step 3.")
+        return
     if not os.path.exists(JSON_EFFICIENZA):
         print("[!] ERRORE: Esegui prima lo Step 4.")
         return
 
+    with open(JSON_TERMICA, "r") as f:
+        db_step3 = json.load(f)
     with open(JSON_EFFICIENZA, "r") as f:
         db_step4 = json.load(f)
-    
+
     # Inizializzazione Mosaici
     src_ir = rasterio.open(IR_MOSAIC)
     src_rgb = rasterio.open(RGB_MOSAIC)
     rgb_canvas = np.transpose(src_rgb.read([1,2,3]), (1,2,0)).copy()
+    ir_canvas  = np.transpose(src_ir.read([1,2,3]), (1,2,0)).copy()
 
-    from rfdetr import RFDETRSegLarge
-    model = RFDETRSegLarge(pretrain_weights=WEIGHTS_PATH, num_classes=3)
+    # Calcolo Scala da GeoTIFF (IR vs RGB)
+    res_x_ir, res_y_ir = abs(src_ir.transform.a), abs(src_ir.transform.e)
+    res_x_rgb, res_y_rgb = abs(src_rgb.transform.a), abs(src_rgb.transform.e)
+
+    scale_x = res_x_ir / res_x_rgb
+    scale_y = res_y_ir / res_y_rgb
     
-    lista_orig = sorted(glob.glob(os.path.join(PATCH_IR_DIR, "*.jpg")))
+    print(f"[*] Fattori di scala calcolati da GeoTIFF -> X: {scale_x:.2f}, Y: {scale_y:.2f}")
+
+    # Costruisce mappa pair_N -> (col_offset, row_offset) dai file di registrazione
+    REG_DIR = os.path.join(OUTPUT_DIR, "registrazione_allineamento")
+    pair_to_offset = {}
+    for reg_file in glob.glob(os.path.join(REG_DIR, "pair*_tile_col_*_row_*.jpg")):
+        m = re.search(r"pair(\d+)_tile_col_(\d+)_row_(\d+)", os.path.basename(reg_file))
+        if m:
+            pair_to_offset[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
+
     esh = 3.18 # Default
 
     pannelli_globali = []
 
-    for nome_patch, rilevamenti in tqdm(db_step4["analisi"].items(), desc="Mappatura Geografica"):
+    for nome_patch, rilevamenti in tqdm(db_step4.items(), desc="Mappatura Geografica"):
         # Recupero offset
-        idx = int(re.search(r"pair(\d+)_", nome_patch).group(1)) - 1
-        m_off = re.search(r"tile_col_(\d+)_row_(\d+)", os.path.basename(lista_orig[idx]))
-        c_off, r_off = int(m_off.group(1)), int(m_off.group(2))
+        pair_num = int(re.search(r"pair(\d+)_", nome_patch).group(1))
+        if pair_num not in pair_to_offset:
+            continue
+        c_off, r_off = pair_to_offset[pair_num]
 
-        # Maschere e Georeferenziazione
-        p_img = cv2.imread(os.path.join(OUTPUT_DIR, "pair", nome_patch))
-        res = model.predict(Image.fromarray(cv2.cvtColor(p_img, cv2.COLOR_BGR2RGB)), threshold=0.6)
-        
-        if res and len(res.xyxy) > 0:
-            for k, d_json in enumerate(rilevamenti):
-                if k >= len(res.xyxy): break
-                mask = res.mask[k]
-                cnts, _ = cv2.findContours((mask.astype(np.uint8)*255), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if not cnts: continue
-                c_big = max(cnts, key=cv2.contourArea)
-                if cv2.contourArea(c_big) < SOGLIA_AREA_PX: continue
+        pannelli_step3 = db_step3.get(nome_patch, [])
 
-                # Trasformazione coordinate IR -> RGB
-                xs, ys = c_big[:,0,0] + c_off, c_big[:,0,1] + r_off
-                e, n = rasterio.transform.xy(src_ir.transform, ys, xs)
-                xr, yr = transform_coords(src_ir.crs, src_rgb.crs, e, n)
-                rs, cs = rasterio.transform.rowcol(src_rgb.transform, xr, yr)
-                
-                m_cnt = np.array([list(zip(cs, rs))], dtype=np.int32)
-                M = cv2.moments(m_cnt)
-                cx, cy = (int(M["m10"]/M["m00"]), int(M["m01"]/M["m00"])) if M["m00"] != 0 else (0,0)
+        for k, d_json in enumerate(rilevamenti):
+            if k >= len(pannelli_step3): break
+            if d_json["salute"] == 0: continue
+            points = pannelli_step3[k].get("points")
+            if not points: continue
+            pts = np.array(points, dtype=np.int32).reshape(-1, 1, 2)
+            if len(pts) < 3: continue
 
-                # Calcolo economico basato sull'efficienza del JSON
-                p_max = 350 # Watt nominali stimati per pannello
-                p_persa = p_max * (1 - (d_json["salute_relativa"]/100))
-                euro_p = (p_persa / 1000) * esh * GIORNI_UTIL * COSTO_KWH
+            # Rettangolo orientato (minAreaRect) -> 4 punti
+            rect = cv2.minAreaRect(pts)
+            box = cv2.boxPoints(rect).astype(np.int32).reshape(-1, 1, 2)
 
-                pannelli_globali.append({
-                    'contour': m_cnt, 'centroid': (cx, cy),
-                    'eta': d_json["salute_relativa"], 
-                    'color': determina_colore_rgb(d_json["salute_relativa"]),
-                    'euro_persi': euro_p, 'stato': d_json["stato"]
-                })
+            colore = determina_colore(d_json["salute"], d_json["label"])
+
+            # Rettangolo in spazio IR (coordinate pixel dirette - NON TOCCATO)
+            xs_ir = box[:,0,0] + c_off
+            ys_ir = box[:,0,1] + r_off
+            ir_cnt = np.array([list(zip(xs_ir, ys_ir))], dtype=np.int32)
+
+            # 1. Trova il centroide in coordinate pixel IR
+            M_ir = cv2.moments(ir_cnt)
+            cx_ir = int(M_ir["m10"]/M_ir["m00"]) if M_ir["m00"] != 0 else 0
+            cy_ir = int(M_ir["m01"]/M_ir["m00"]) if M_ir["m00"] != 0 else 0
+
+            # 2. Converti centroide IR -> Geografico -> Pixel RGB
+            lon, lat = rasterio.transform.xy(src_ir.transform, cy_ir, cx_ir)
+            xr_geo, yr_geo = transform_coords(src_ir.crs, src_rgb.crs, [lon], [lat])
+            row_rgb, col_rgb = rasterio.transform.rowcol(src_rgb.transform, xr_geo[0], yr_geo[0])
+            cx, cy = int(col_rgb), int(row_rgb)
+
+            # 3. Scala e posiziona la maschera per l'RGB
+            rgb_cnt_pts = []
+            for x, y in zip(xs_ir, ys_ir):
+                new_x = int((x - cx_ir) * scale_x + cx)
+                new_y = int((y - cy_ir) * scale_y + cy)
+                rgb_cnt_pts.append([new_x, new_y])
+            
+            m_cnt = np.array([rgb_cnt_pts], dtype=np.int32)
+
+            # 4. CORREZIONE DERIVA (SNAPPING SULL'IMMAGINE)
+            m_cnt = correggi_deriva_locale(rgb_canvas, m_cnt)
+
+            # Ricalcolo centroide corretto (utile per label e filtri)
+            M_rgb = cv2.moments(m_cnt)
+            cx_corr = int(M_rgb["m10"]/M_rgb["m00"]) if M_rgb["m00"] != 0 else cx
+            cy_corr = int(M_rgb["m01"]/M_rgb["m00"]) if M_rgb["m00"] != 0 else cy
+
+            # Calcolo economico basato sull'efficienza del JSON
+            p_max = 350 # Watt nominali stimati per pannello
+            p_persa = p_max * (1 - (d_json["salute"]/100))
+            euro_p = (p_persa / 1000) * esh * GIORNI_UTIL * COSTO_KWH
+
+            pannelli_globali.append({
+                'contour': m_cnt, 'centroid': (cx_corr, cy_corr),
+                'ir_contour': ir_cnt, 'ir_centroid': (cx_ir, cy_ir),
+                'eta': d_json["salute"],
+                'color': colore,
+                'euro_persi': euro_p, 'stato': d_json["label"]
+            })
+
+    # Filtro area: calcola area media IR e rimuove maschere sotto la media
+    if pannelli_globali:
+        aree_ir = np.array([cv2.contourArea(p['ir_contour']) for p in pannelli_globali], dtype=np.float32)
+        area_media = float(np.mean(aree_ir))
+        print(f"[*] Area media pannello (IR): {area_media:.0f} px²  —  totale prima del filtro: {len(pannelli_globali)}")
+        pannelli_globali = [p for p in pannelli_globali if cv2.contourArea(p['ir_contour']) >= area_media]
+        print(f"[*] Pannelli dopo filtro area: {len(pannelli_globali)}")
 
     # NMS (Rimozione duplicati)
-    pannelli_globali.sort(key=lambda x: cv2.contourArea(x['contour']), reverse=True)
+    pannelli_globali.sort(key=lambda x: cv2.contourArea(x['ir_contour']), reverse=True)
     unici = []
     for p in pannelli_globali:
-        if not any(cv2.pointPolygonTest(u['contour'], p['centroid'], False) >= 0 for u in unici):
+        if not any(cv2.pointPolygonTest(u['ir_contour'], p['ir_centroid'], False) >= 0 for u in unici):
             unici.append(p)
-    
+
     # Ordinamento e ID
     unici.sort(key=lambda p: (p['centroid'][1], p['centroid'][0]))
     for i, p in enumerate(unici): p['id'] = i + 1
@@ -213,13 +350,26 @@ def main():
         writer = csv.writer(f)
         writer.writerow(["ID", "Stato", "Salute_%", "Perdita_€_Anno"])
         for p in unici:
+            label_txt = f"#{p['id']} {p['eta']:.0f}%"
+            # RGB
             cv2.drawContours(rgb_canvas, p['contour'], -1, p['color'], 4)
-            cv2.putText(rgb_canvas, f"#{p['id']}", p['centroid'], cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,0), 2)
+            testo_centrato(rgb_canvas, label_txt, p['centroid'][0], p['centroid'][1], p['color'])
+            # IR
+            cv2.drawContours(ir_canvas, p['ir_contour'], -1, p['color'], 4)
+            testo_centrato(ir_canvas, label_txt, p['ir_centroid'][0], p['ir_centroid'][1], p['color'])
             writer.writerow([p['id'], p['stato'], round(p['eta'], 2), round(p['euro_persi'], 2)])
 
-    # Export Mappa
-    with rasterio.open(MAPPA_OUT_PATH, 'w', **src_rgb.profile) as dst:
+    # Export Mappa RGB
+    profile = src_rgb.profile.copy()
+    profile.update(count=3)
+    with rasterio.open(MAPPA_OUT_PATH, 'w', **profile) as dst:
         dst.write(np.transpose(rgb_canvas, (2,0,1)))
+
+    # Export Mappa IR
+    profile_ir = src_ir.profile.copy()
+    profile_ir.update(count=3)
+    with rasterio.open(MAPPA_IR_OUT_PATH, 'w', **profile_ir) as dst:
+        dst.write(np.transpose(ir_canvas, (2,0,1)))
 
     # Generazione Report PDF
     dati_rep = {

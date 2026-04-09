@@ -1,124 +1,124 @@
-#!/usr/bin/env python3
+
 import os
 import json
-import csv
 import cv2
 import numpy as np
 from tqdm import tqdm
 
-# ==============================================================================
-# CONFIGURAZIONE PERCORSI
-# ==============================================================================
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TERM_DIR = os.path.join(BASE_DIR, "risultati_finali", "analisi_termica")
+PAIR_DIR = os.path.join(BASE_DIR, "risultati_finali", "pair")
 EFF_DIR  = os.path.join(BASE_DIR, "risultati_finali", "efficienza_risultati")
 
-# PARAMETRI FISICI
 ETA_NOMINAL = 0.18    
 GAMMA       = -0.0035 
 EPSILON     = 0.90    
 T_AMB       = 25.0    
-T_STC       = 25.0    
 
-# ==============================================================================
-# FUNZIONI DI CALCOLO
-# ==============================================================================
-def calcola_efficienza_singola(t_c):
-    if t_c is None: return 0.0
-    t_app_k = t_c + 273.15
-    t_amb_k = T_AMB + 273.15
-    # Correzione Stefan-Boltzmann
-    t_reale_k = (( (t_app_k**4) - (1 - EPSILON) * (t_amb_k**4) ) / EPSILON)**0.25
-    t_reale_c = t_reale_k - 273.15
-    delta_t = t_reale_c - T_STC
-    return max(0.0, ETA_NOMINAL * (1 + GAMMA * delta_t))
 
-# ==============================================================================
-# MAIN PROCESS
-# ==============================================================================
+def calcola_efficienza_termodinamica(t_c):
+    if t_c is None or t_c == 0: return 0.0
+    try:
+        t_k = t_c + 273.15
+        t_amb_k = T_AMB + 273.15
+        t_reale_k = (( (t_k**4) - (1 - EPSILON) * (t_amb_k**4) ) / EPSILON)**0.25
+        delta_t = (t_reale_k - 273.15) - 25.0
+        return max(0.0, ETA_NOMINAL * (1 + GAMMA * delta_t))
+    except: return 0.0
+
 def main():
     os.makedirs(EFF_DIR, exist_ok=True)
-    json_input_path = os.path.join(TERM_DIR, "analisi_dati.json")
-
-    if not os.path.exists(json_input_path):
-        print(f"[!] Errore: Il file {json_input_path} non esiste.")
+    json_in = os.path.join(TERM_DIR, "analisi_dati.json")
+    
+    if not os.path.exists(json_in):
+        print(f"[!] Errore: Manca {json_in}.")
         return
 
-    with open(json_input_path, "r") as f:
-        database = json.load(f)
+    with open(json_in, "r") as f:
+        db_termico = json.load(f)
 
-    # --- FASE 1: RICERCA RIFERIMENTO ---
     lista_eta_sani = []
-    for patch_file in database:
-        for det in database[patch_file]:
-            if det["class_id"] != 1 and det["temp_media"] is not None:
-                lista_eta_sani.append(calcola_efficienza_singola(det["temp_media"]))
+    for img_name, rilevamenti in db_termico.items():
+        for d in rilevamenti:
+            if d.get("class_id") != 1:
+                t = d.get("temp_media")
+                if t is not None:
+                    lista_eta_sani.append(calcola_efficienza_termodinamica(t))
     
-    max_eta_riferimento = max(lista_eta_sani) if lista_eta_sani else ETA_NOMINAL
+    max_eta_rif = max(lista_eta_sani) if lista_eta_sani else ETA_NOMINAL
 
-    # --- FASE 2: ELABORAZIONE E SALVATAGGIO ---
-    csv_path = os.path.join(EFF_DIR, "report_pannelli_dettagliato.csv")
-    json_output_path = os.path.join(EFF_DIR, "efficienza_dati.json") # FILE PER STEP 5
+    dati_step4 = {}
     
-    dati_finali_per_step5 = {}
+    for img_name, rilevamenti in tqdm(db_termico.items(), desc="Calcolo Efficienza"):
+        img_path = os.path.join(PAIR_DIR, img_name)
+        canvas = cv2.imread(img_path)
+        if canvas is None: continue
+        
+        overlay = canvas.copy()
+        analisi_patch = []
 
-    with open(csv_path, "w", newline="") as f_csv:
-        writer = csv.writer(f_csv)
-        writer.writerow(["File_Immagine", "ID_Pannello", "Stato_IA", "Temp_C", "Eff_Assoluta", "Salute_Relativa_pct"])
+        for i, d in enumerate(rilevamenti):
+            t_rif = d.get("temp_utilizzata")
+            if t_rif is None:
+                t_rif = d.get("temp_max") if d.get("class_id") == 1 else d.get("temp_media")
 
-        print(f"[*] Calcolo efficienza e generazione dati per Step 5...")
-        for nome_img, rilevamenti in tqdm(database.items(), desc="Processing"):
+            if t_rif is None:
+                t_rif = 0.0
+                label_temp = "N/A"
+            else:
+                label_temp = f"{round(t_rif, 1)}C"
+
+            eta_ass = calcola_efficienza_termodinamica(t_rif)
+            salute_rel = min(100.0, (eta_ass / max_eta_rif * 100)) if max_eta_rif > 0 else 0
             
-            img_thermal_path = os.path.join(TERM_DIR, nome_img.replace(".jpg", "_thermal.jpg"))
-            canvas = cv2.imread(img_thermal_path)
+            is_damaged = (d.get("class_id") == 1 or salute_rel < 90)
+            color = (0, 0, 255) if is_damaged else (0, 255, 0)
             
-            analisi_patch = []
+            if 'points' in d and d['points']:
+                pts = np.array(d['points'], dtype=np.int32)
+             
+                cv2.fillPoly(overlay, [pts], color)
+                cv2.polylines(canvas, [pts], True, color, 2)
 
-            for i, d in enumerate(rilevamenti):
-                # Se DIFETTOSO (1) -> usa Temp MAX, altrimenti MEDIA
-                t_rif = d["temp_max"] if d["class_id"] == 1 else d["temp_media"]
+                M = cv2.moments(pts)
+                if M["m00"] != 0:
+                    cX = int(M["m10"] / M["m00"])
+                    cY = int(M["m01"] / M["m00"])
+                else:
+               
+                    cX, cY = pts[0][0], pts[0][1]
+
+                label = f"P{i+1}: {salute_rel:.1f}% ({label_temp})"
                 
-                eta_pannello = calcola_efficienza_singola(t_rif)
-                salute_rel = (eta_pannello / max_eta_riferimento * 100) if max_eta_riferimento > 0 else 0
+              
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                scale = 0.45
+                thickness = 1
+                (w, h), _ = cv2.getTextSize(label, font, scale, thickness)
+         
+                text_pos = (cX - w // 2, cY + h // 2)
+
                 
-                # Prepara dati per JSON (Step 5)
-                analisi_patch.append({
-                    "id_pannello": i + 1,
-                    "stato": d["label"],
-                    "class_id": d["class_id"],
-                    "temp_riferimento": round(t_rif, 2),
-                    "efficienza_assoluta": round(eta_pannello, 4),
-                    "salute_relativa": round(salute_rel, 2)
-                })
+                cv2.putText(canvas, label, text_pos, font, scale, (0,0,0), 3, cv2.LINE_AA)
+                cv2.putText(canvas, label, text_pos, font, scale, (255,255,255), thickness, cv2.LINE_AA)
+      
 
-                # Scrittura CSV
-                writer.writerow([nome_img, i+1, d["label"], round(t_rif, 2), round(eta_pannello, 4), round(salute_rel, 2)])
+            analisi_patch.append({
+                "id": i + 1,
+                "label": d.get("label"),
+                "salute": round(salute_rel, 2),
+                "temp": round(t_rif, 2) if t_rif != 0.0 else None
+            })
 
-                # Overlay grafico
-                if canvas is not None:
-                    color = (0, 0, 255) if d["class_id"] == 1 else (0, 255, 0)
-                    cv2.putText(canvas, f"P{i+1}: {salute_rel:.1f}%", (10, 30 + (i*25)), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        cv2.addWeighted(overlay, 0.3, canvas, 0.7, 0, canvas)
+        dati_step4[img_name] = analisi_patch
+        cv2.imwrite(os.path.join(EFF_DIR, img_name.replace(".jpg", "_efficienza.jpg")), canvas)
 
-            # Aggiungi al database JSON
-            dati_finali_per_step5[nome_img] = analisi_patch
-
-            if canvas is not None:
-                cv2.imwrite(os.path.join(EFF_DIR, nome_img.replace(".jpg", "_efficienza.jpg")), canvas)
-
-    # --- SALVATAGGIO JSON PER STEP 5 ---
-    with open(json_output_path, "w") as f_json:
-        json.dump({
-            "metadata": {
-                "eta_riferimento_impianto": round(max_eta_riferimento, 4),
-                "parametri": {"t_amb": T_AMB, "epsilon": EPSILON, "gamma": GAMMA}
-            },
-            "analisi": dati_finali_per_step5
-        }, f_json, indent=4)
-
-    print(f"\n[FINE] Analisi completata.")
-    print(f" -> JSON per Step 5: {json_output_path}")
-    print(f" -> Report CSV: {csv_path}")
+    with open(os.path.join(EFF_DIR, "efficienza_dati.json"), "w") as f:
+        json.dump(dati_step4, f, indent=4)
+    
+    print(f"\n[OK] Analisi completata. Etichette centrate salvate in {EFF_DIR}")
 
 if __name__ == "__main__":
     main()
