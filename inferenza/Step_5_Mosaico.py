@@ -87,14 +87,31 @@ def estrai_gps_da_drone():
     return None, None
 
 
-def get_pvgis_esh(lat, lon):
+def get_pvgis_data(lat, lon):
+    """
+    Interroga PVGIS e restituisce (esh, giorni_utili).
+    - esh          : ore equivalenti di pieno sole medie giornaliere (E_y / 365)
+    - giorni_utili : giorni/anno con irraggiamento medio >= 1.5 kWh/m²/giorno
+    """
+    GIORNI_MESE = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    SOGLIA_HID  = 1.5   # kWh/m²/giorno — sotto questa soglia il mese è trascurabile
     try:
-        url = f"https://re.jrc.ec.europa.eu/api/v5_2/PVcalc?lat={lat}&lon={lon}&peakpower=1&loss=14&outputformat=json"
+        url = (f"https://re.jrc.ec.europa.eu/api/v5_2/PVcalc?"
+               f"lat={lat}&lon={lon}&peakpower=1&loss=14&outputformat=json")
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
-            return data["outputs"]["totals"]["fixed"]["E_y"] / 365.0
-    except: return 3.18
+
+        esh = data["outputs"]["totals"]["fixed"]["E_y"] / 365.0
+
+        giorni_utili = 0
+        for m in data["outputs"]["monthly"]["fixed"]:
+            if m["H(i)_d"] >= SOGLIA_HID:
+                giorni_utili += GIORNI_MESE[m["month"] - 1]
+
+        return esh, giorni_utili
+    except:
+        return 3.18, 300
 
 def testo_centrato(canvas, testo, cx, cy, colore, scala=0.55, spessore=1):
     (tw, th), _ = cv2.getTextSize(testo, cv2.FONT_HERSHEY_SIMPLEX, scala, spessore)
@@ -283,15 +300,16 @@ def main():
         if m:
             pair_to_offset[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
 
-    # ESH da PVGIS usando coordinate GPS reali dal drone
+    # ESH e giorni utili da PVGIS usando coordinate GPS reali dal drone
     lat_drone, lon_drone = estrai_gps_da_drone()
     if lat_drone is not None:
         print(f"[*] Coordinate volo: {lat_drone:.5f}°N, {lon_drone:.5f}°E — interrogo PVGIS...")
-        esh = get_pvgis_esh(lat_drone, lon_drone)
-        print(f"[*] ESH da PVGIS: {esh:.2f} ore/giorno")
+        esh, giorni_utili = get_pvgis_data(lat_drone, lon_drone)
+        print(f"[*] ESH da PVGIS       : {esh:.2f} ore/giorno")
+        print(f"[*] Giorni utili PVGIS : {giorni_utili} giorni/anno (mesi con H(i)_d >= 1.5 kWh/m²)")
     else:
-        esh = 3.18
-        print(f"[!] GPS non trovato nelle foto drone. Uso ESH default: {esh} ore/giorno")
+        esh, giorni_utili = 3.18, 300
+        print(f"[!] GPS non trovato nelle foto drone. Uso valori default: ESH={esh}, giorni={giorni_utili}")
 
     pannelli_globali = []
 
@@ -354,7 +372,7 @@ def main():
             # Calcolo economico basato sull'efficienza del JSON
             p_max = 350 # Watt nominali stimati per pannello
             p_persa = p_max * (1 - (d_json["salute"]/100))
-            kwh_persi_anno = (p_persa / 1000) * esh * GIORNI_UTIL
+            kwh_persi_anno = (p_persa / 1000) * esh * giorni_utili
             euro_p = kwh_persi_anno * COSTO_KWH
 
             pannelli_globali.append({
