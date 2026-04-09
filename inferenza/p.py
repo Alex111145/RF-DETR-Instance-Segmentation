@@ -22,7 +22,7 @@ OUT_IMAGE    = os.path.join(OUT_DIR, "debug_zone_analizzate.jpg")
 
 SCALA_OUTPUT  = 0.25
 ANGLE_GAP     = 15.0   
-SPATIAL_GAP   = 800    
+SPATIAL_GAP   =200    
 MIN_ZONE_SIZE = 12      
 
 PALETTE = [
