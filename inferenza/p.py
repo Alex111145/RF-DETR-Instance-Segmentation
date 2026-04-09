@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 debug_zone.py — Visualizza le falde del tetto sull'ortomosaico IR.
-Le zone sono maschere morfologiche che seguono la forma reale dei blocchi di pannelli.
 """
 import os
 import re
@@ -21,10 +20,10 @@ REG_DIR      = os.path.join(OUT_DIR, "registrazione_allineamento")
 JSON_TERMICA = os.path.join(OUT_DIR, "analisi_termica", "analisi_dati.json")
 OUT_IMAGE    = os.path.join(OUT_DIR, "debug_zone_analizzate.jpg")
 
-SCALA_OUTPUT = 0.25
-ANGLE_GAP    = 15.0   # gradi — max differenza d'angolo nella stessa falda
-SPATIAL_GAP  = 800    # pixel — max distanza tra patch della stessa falda
-PATCH_SIZE   = 504    # pixel — dimensione patch IR
+SCALA_OUTPUT  = 0.25
+ANGLE_GAP     = 15.0   
+SPATIAL_GAP   = 800    
+MIN_ZONE_SIZE = 8      
 
 PALETTE = [
     (0, 220, 0),
@@ -39,12 +38,7 @@ PALETTE = [
     (255, 100, 0),
 ]
 
-
 def roof_zone_mapping(pair_to_offset, db_pannelli):
-    """
-    Determina le zone delle falde del tetto a livello di SINGOLO PANNELLO 
-    combinando angolazione e prossimità spaziale tramite Union-Find.
-    """
     panels_data = [] 
     
     for img_name, panels in db_pannelli.items():
@@ -68,7 +62,7 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
             w, h = rect[1]
             if w < h:
                 a += 90.0
-            a = a % 180.0  # CORRETTO: calcolo effettivo su 180 gradi
+            a = a % 180.0 
             
             M = cv2.moments(pts_arr)
             if M["m00"] != 0:
@@ -79,14 +73,12 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
                 
             panels_data.append({
                 "id": (img_name, idx),
-                "pair": pair_num,
                 "angle": a,
                 "cx": cx,
-                "cy": cy
+                "cy": cy,
             })
 
     if not panels_data:
-        print("[*] Nessun pannello trovato — zona unica.")
         return {}
 
     n = len(panels_data)
@@ -101,7 +93,7 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
     def union(x, y):
         parent[find(x)] = find(y)
 
-    for i in tqdm(range(n), desc="Mappatura falde (Union-Find)"):
+    for i in tqdm(range(n), desc="Mappatura falde (Fase 1)"):
         for j in range(i + 1, n):
             pi, pj = panels_data[i], panels_data[j]
             ad = abs(pi["angle"] - pj["angle"])
@@ -118,7 +110,67 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
     for i in range(n):
         comps[find(i)].append(panels_data[i])
         
-    sorted_comps = sorted(comps.values(), key=len, reverse=True)
+    groups = list(comps.values())
+
+    merged_any = True
+    while merged_any:
+        merged_any = False
+        groups.sort(key=len, reverse=True)
+        merged_indices = set()
+        
+        for i in range(len(groups)):
+            if i in merged_indices: continue
+            compA = groups[i]
+            if len(compA) < 3: continue
+            
+            ptsA = np.array([[p["cx"], p["cy"]] for p in compA], dtype=np.float32)
+            hullA = cv2.convexHull(ptsA)
+            
+            for j in range(i + 1, len(groups)):
+                if j in merged_indices: continue
+                compB = groups[j]
+                
+                inside_count = 0
+                for pB in compB:
+                    dist = cv2.pointPolygonTest(hullA, (float(pB["cx"]), float(pB["cy"])), measureDist=True)
+                    if dist >= -250: 
+                        inside_count += 1
+                        
+                if inside_count >= len(compB) * 0.5:
+                    compA.extend(compB)
+                    merged_indices.add(j)
+                    merged_any = True
+                    
+        groups = [groups[k] for k in range(len(groups)) if k not in merged_indices]
+
+    final_groups = []
+    small_groups = []
+    
+    for g in groups:
+        if len(g) >= MIN_ZONE_SIZE:
+            final_groups.append(g)
+        else:
+            small_groups.append(g)
+            
+    if final_groups and small_groups:
+        for sg in small_groups:
+            best_dist = float('inf')
+            best_idx = None
+            for i, fg in enumerate(final_groups):
+                for p in sg:
+                    for fp in fg:
+                        d_sq = (p["cx"] - fp["cx"])**2 + (p["cy"] - fp["cy"])**2
+                        if d_sq < best_dist:
+                            best_dist = d_sq
+                            best_idx = i
+            if best_idx is not None and best_dist <= (SPATIAL_GAP * 2)**2:
+                final_groups[best_idx].extend(sg)
+            else:
+                final_groups.append(sg)
+    elif not final_groups:
+        final_groups = groups
+
+    sorted_comps = sorted(final_groups, key=len, reverse=True)
 
     result = {}
     print(f"\n[*] Zone (falde) rilevate: {len(sorted_comps)}")
@@ -131,15 +183,9 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
 
     return result
 
-
 def disegna_maschere_zone(canvas, pair_to_offset, pair_to_zone, db_pannelli):
-    """
-    Per ogni zona dipinge i contorni REALI dei pannelli (dal JSON Step 3)
-    shiftati nella posizione del mosaico, poi chiusura morfologica e contorno.
-    """
     H, W = canvas.shape[:2]
 
-    # Maschera per zona + contatore pannelli
     zone_masks   = defaultdict(lambda: np.zeros((H, W), dtype=np.uint8))
     zone_counts  = defaultdict(int)
 
@@ -161,7 +207,6 @@ def disegna_maschere_zone(canvas, pair_to_offset, pair_to_zone, db_pannelli):
             cv2.fillPoly(zone_masks[zone_id], [pts_arr], 255)
             zone_counts[zone_id] += 1
 
-    # Kernel MORFOLOGICO DIMINUITO: da (80, 80) a (35, 35) per evitare overlap eccessivo
     kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (35, 35))
 
     for zone_id in sorted(zone_masks.keys()):
@@ -197,7 +242,6 @@ def disegna_maschere_zone(canvas, pair_to_offset, pair_to_zone, db_pannelli):
 
     return canvas
 
-
 def main():
     with rasterio.open(IR_MOSAIC) as src:
         canvas = np.transpose(src.read([1, 2, 3]), (1, 2, 0)).copy()
@@ -214,14 +258,12 @@ def main():
 
     if not os.path.exists(JSON_TERMICA):
         print(f"[!] JSON termico non trovato: {JSON_TERMICA}")
-        print("[!] Esegui prima Step_3_Temperatura.py")
         return
 
     with open(JSON_TERMICA) as f:
         db_pannelli = json.load(f)
 
     pair_to_zone = roof_zone_mapping(pair_to_offset, db_pannelli)
-
     canvas = disegna_maschere_zone(canvas, pair_to_offset, pair_to_zone, db_pannelli)
 
     if SCALA_OUTPUT != 1.0:
@@ -231,7 +273,6 @@ def main():
 
     cv2.imwrite(OUT_IMAGE, canvas, [cv2.IMWRITE_JPEG_QUALITY, 90])
     print(f"[OK] Salvato: {OUT_IMAGE}  ({canvas.shape[1]}×{canvas.shape[0]} px)")
-
 
 if __name__ == "__main__":
     main()
