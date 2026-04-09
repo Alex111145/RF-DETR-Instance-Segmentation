@@ -114,12 +114,13 @@ def carica_pair_to_offset():
 
 ANGLE_GAP     = 15.0   
 SPATIAL_GAP   = 800    
-MIN_ZONE_SIZE = 8      
+MIN_ZONE_SIZE = 12     # Sotto i 12 pannelli è considerata una micro-area (rumore)
 
 def roof_zone_mapping(pair_to_offset, db_pannelli):
     """
-    1. Union-Find base (Distanza + Angolo)
-    2. ASSORBIMENTO CONVEX HULL: Le zone interne a un'altra falda vengono assorbite forzatamente.
+    1. Union-Find base (Distanza + Angolo) per separare le falde.
+    2. Post-Processing "Safe": Assorbe le micro-aree (<12 pannelli) nella macro-area più vicina.
+       Le macro-aree non vengono MAI unite tra loro, preservando la geometria reale del tetto.
     """
     panels_data = [] 
     
@@ -172,7 +173,7 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
     def union(x, y):
         parent[find(x)] = find(y)
 
-    # 1. Clustering iniziale
+    # 1. Clustering iniziale basato rigorosamente su Angolo e Spazio
     for i in tqdm(range(n), desc="Mappatura falde (Fase 1)"):
         for j in range(i + 1, n):
             pi, pj = panels_data[i], panels_data[j]
@@ -190,72 +191,41 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
     for i in range(n):
         comps[find(i)].append(panels_data[i])
         
-    groups = list(comps.values())
-
-    # 2. Post-Processing: Assorbimento in base al Convex Hull (Nessuna area dentro un'altra)
-    merged_any = True
-    while merged_any:
-        merged_any = False
-        groups.sort(key=len, reverse=True)
-        merged_indices = set()
-        
-        for i in range(len(groups)):
-            if i in merged_indices: continue
-            compA = groups[i]
-            if len(compA) < 3: continue
-            
-            # Crea l'inviluppo convesso della falda grande
-            ptsA = np.array([[p["cx"], p["cy"]] for p in compA], dtype=np.float32)
-            hullA = cv2.convexHull(ptsA)
-            
-            for j in range(i + 1, len(groups)):
-                if j in merged_indices: continue
-                compB = groups[j]
-                
-                inside_count = 0
-                for pB in compB:
-                    # Verifica se il pannello B è dentro (o a contatto) della falda A
-                    dist = cv2.pointPolygonTest(hullA, (float(pB["cx"]), float(pB["cy"])), measureDist=True)
-                    if dist >= -250: # Tolleranza di margine per i bordi interni
-                        inside_count += 1
-                        
-                # Se la maggior parte della zona B cade dentro la zona A, assorbila tutta
-                if inside_count >= len(compB) * 0.5:
-                    compA.extend(compB)
-                    merged_indices.add(j)
-                    merged_any = True
-                    
-        groups = [groups[k] for k in range(len(groups)) if k not in merged_indices]
-
-    # 3. Pulizia finale: assorbi micro-aree rimanenti alla più vicina
-    final_groups = []
+    # 2. Suddivisione in Macro-aree (vere falde) e Micro-aree (rumore da assorbire)
+    large_groups = []
     small_groups = []
     
-    for g in groups:
-        if len(g) >= MIN_ZONE_SIZE:
-            final_groups.append(g)
+    for comp in comps.values():
+        if len(comp) >= MIN_ZONE_SIZE:
+            large_groups.append(comp)
         else:
-            small_groups.append(g)
-            
-    if final_groups and small_groups:
+            small_groups.append(comp)
+
+    # 3. Assorbimento basato puramente sulla distanza minima
+    if large_groups and small_groups:
         for sg in small_groups:
             best_dist = float('inf')
             best_idx = None
-            for i, fg in enumerate(final_groups):
-                for p in sg:
-                    for fp in fg:
-                        d_sq = (p["cx"] - fp["cx"])**2 + (p["cy"] - fp["cy"])**2
+            
+            # Trova la macro-area fisicamente più vicina
+            for i, lg in enumerate(large_groups):
+                for p_small in sg:
+                    for p_large in lg:
+                        d_sq = (p_small["cx"] - p_large["cx"])**2 + (p_small["cy"] - p_large["cy"])**2
                         if d_sq < best_dist:
                             best_dist = d_sq
                             best_idx = i
-            if best_idx is not None and best_dist <= (SPATIAL_GAP * 2)**2:
-                final_groups[best_idx].extend(sg)
+                            
+            # Se la macro-area è abbastanza vicina, assorbi il gruppetto
+            if best_idx is not None and best_dist <= (SPATIAL_GAP * 1.5)**2:
+                large_groups[best_idx].extend(sg)
             else:
-                final_groups.append(sg)
-    elif not final_groups:
-        final_groups = groups
+                # Altrimenti rimane una falda a sé (caso raro)
+                large_groups.append(sg)
+    elif not large_groups:
+        large_groups = list(comps.values())
 
-    sorted_comps = sorted(final_groups, key=len, reverse=True)
+    sorted_comps = sorted(large_groups, key=len, reverse=True)
 
     result = {}
     print(f"\n[*] Zone (falde) rilevate: {len(sorted_comps)}")
