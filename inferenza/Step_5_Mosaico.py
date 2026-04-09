@@ -40,7 +40,8 @@ CSV_UNICI       = os.path.join(OUTPUT_DIR, "report_pannelli_unici.csv")
 # Parametri Economici (Standard se non diversamente specificato)
 COSTO_KWH       = 0.40
 GIORNI_UTIL      = 300
-SOGLIA_AREA_PX  = 10000 
+SOGLIA_AREA_PX  = 10000
+
 
 # Palette Colori A2A (BGR)
 C_PRIMARY = (159, 91, 0)   
@@ -114,6 +115,101 @@ def get_pvgis_data(lat, lon):
         return esh, giorni_utili
     except:
         return 3.18, 300
+
+ANGLE_GAP   = 15.0   # gradi — max differenza d'angolo nella stessa falda
+SPATIAL_GAP = 800    # pixel — max distanza tra patch della stessa falda
+
+def roof_zone_mapping(pair_to_offset, db_pannelli):
+    """
+    Determina le zone delle falde del tetto a livello di SINGOLO PANNELLO 
+    combinando angolazione e prossimità spaziale tramite Union-Find.
+    """
+    panels_data = [] 
+    
+    for img_name, panels in db_pannelli.items():
+        m = re.search(r"pair(\d+)_", img_name)
+        if not m: continue
+        pair_num = int(m.group(1))
+        
+        if pair_num not in pair_to_offset:
+            continue
+            
+        col_off, row_off = pair_to_offset[pair_num]
+        
+        for idx, panel in enumerate(panels):
+            pts = panel.get("points")
+            if not pts or len(pts) < 3:
+                continue
+                
+            pts_arr = np.array(pts, dtype=np.float32)
+            rect = cv2.minAreaRect(pts_arr)
+            a = rect[2]
+            w, h = rect[1]
+            if w < h:
+                a += 90.0
+            a = a % 180.0
+            
+            M = cv2.moments(pts_arr)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"]) + col_off
+                cy = int(M["m01"] / M["m00"]) + row_off
+            else:
+                cx, cy = int(pts_arr[0][0]) + col_off, int(pts_arr[0][1]) + row_off
+                
+            panels_data.append({
+                "id": (img_name, idx),
+                "pair": pair_num,
+                "angle": a,
+                "cx": cx,
+                "cy": cy
+            })
+
+    if not panels_data:
+        print("[*] Nessun pannello trovato — zona unica.")
+        return {}
+
+    n = len(panels_data)
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        parent[find(x)] = find(y)
+
+    for i in tqdm(range(n), desc="Mappatura falde (Union-Find)"):
+        for j in range(i + 1, n):
+            pi, pj = panels_data[i], panels_data[j]
+            ad = abs(pi["angle"] - pj["angle"])
+            ad = min(ad, 180.0 - ad)
+            if ad > ANGLE_GAP:
+                continue
+                
+            dist_sq = (pi["cx"] - pj["cx"])**2 + (pi["cy"] - pj["cy"])**2
+            if dist_sq <= SPATIAL_GAP**2:
+                union(i, j)
+
+    from collections import defaultdict
+    comps = defaultdict(list)
+    for i in range(n):
+        comps[find(i)].append(panels_data[i])
+        
+    sorted_comps = sorted(comps.values(), key=len, reverse=True)
+
+    result = {}
+    print(f"\n[*] Zone (falde) rilevate: {len(sorted_comps)}")
+    
+    for zone_id, comp in enumerate(sorted_comps, 1):
+        angoli = [p["angle"] for p in comp]
+        print(f"    Zona {zone_id}: {len(comp)} pannelli, angolo medio = {np.mean(angoli):.1f}°")
+        for p in comp:
+            result[p["id"]] = zone_id
+
+    return result
+
 
 def testo_centrato(canvas, testo, cx, cy, colore, scala=0.55, spessore=1):
     (tw, th), _ = cv2.getTextSize(testo, cv2.FONT_HERSHEY_SIMPLEX, scala, spessore)
@@ -326,6 +422,9 @@ def main():
         if m:
             pair_to_offset[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
 
+    # Zone geografiche K-means (stessa logica di Step_4 e debug_zone)
+    pair_to_zone = roof_zone_mapping(pair_to_offset, db_step3)
+
     # ESH e giorni utili da PVGIS usando coordinate GPS reali dal drone
     lat_drone, lon_drone = estrai_gps_da_drone()
     if lat_drone is not None:
@@ -349,6 +448,9 @@ def main():
         pannelli_step3 = db_step3.get(nome_patch, [])
 
         for k, d_json in enumerate(rilevamenti):
+            # Recupero la zona mappata sul singolo pannello 
+            zone_id = pair_to_zone.get((nome_patch, k), 1)
+
             if k >= len(pannelli_step3): break
             if d_json["salute"] == 0: continue
             points = pannelli_step3[k].get("points")
@@ -407,7 +509,8 @@ def main():
                 'eta': d_json["salute"],
                 'color': colore,
                 'kwh_persi': kwh_persi_anno,
-                'euro_persi': euro_p, 'stato': d_json["label"]
+                'euro_persi': euro_p, 'stato': d_json["label"],
+                'zona': zone_id
             })
 
     # Filtro area: calcola area media IR e rimuove maschere sotto la media
@@ -432,7 +535,7 @@ def main():
     # Disegno e Salvataggio CSV
     with open(CSV_UNICI, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["ID", "Stato", "Salute_%", "kWh_persi_anno", "Perdita_€_Anno"])
+        writer.writerow(["ID", "Zona", "Stato", "Salute_%", "kWh_persi_anno", "Perdita_€_Anno"])
         for p in unici:
             label_txt = f"#{p['id']} {p['eta']:.0f}%"
             # RGB
@@ -443,7 +546,7 @@ def main():
             testo_centrato(ir_canvas, label_txt, p['ir_centroid'][0], p['ir_centroid'][1], p['color'])
             is_problematic = p['stato'] == "DIFETTOSO" or p['eta'] < 90
             kwh_csv = round(p['kwh_persi'], 2) if is_problematic else ""
-            writer.writerow([p['id'], p['stato'], round(p['eta'], 2), kwh_csv, round(p['euro_persi'], 2)])
+            writer.writerow([p['id'], p.get('zona', 1), p['stato'], round(p['eta'], 2), kwh_csv, round(p['euro_persi'], 2)])
 
     # Export Mappa RGB
     profile = src_rgb.profile.copy()
