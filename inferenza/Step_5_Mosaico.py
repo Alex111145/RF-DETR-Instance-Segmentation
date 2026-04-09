@@ -88,11 +88,25 @@ def get_pvgis_data(lat, lon):
     except:
         return 3.18, 300
 
+def calcola_spatial_gap_dinamico(mosaic_path, gap_metri_max=1.0):
+    try:
+        with rasterio.open(mosaic_path) as src:
+            res_x, res_y = src.res
+            if src.crs and src.crs.is_geographic:
+                gsd_metri = res_x * 111320.0
+            else:
+                gsd_metri = res_x
+            pixel_gap = max(50, int(gap_metri_max / gsd_metri))
+            print(f"[*] GSD rilevato: {gsd_metri*100:.2f} cm/px | {gap_metri_max} m equivalgono a {pixel_gap} px")
+            return pixel_gap
+    except Exception as e:
+        print(f"[!] Errore nel calcolo del GSD, uso valore di default (200 px). Errore: {e}")
+        return 200
+
 ANGLE_GAP     = 15.0   
-SPATIAL_GAP   =200    
 MIN_ZONE_SIZE = 12      
 
-def roof_zone_mapping(pair_to_offset, db_pannelli):
+def roof_zone_mapping(pair_to_offset, db_pannelli, spatial_gap_px):
     panels_data = [] 
     
     for img_name, panels in db_pannelli.items():
@@ -149,7 +163,7 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
             ad = min(ad, 180.0 - ad)
             if ad > ANGLE_GAP: continue
             dist_sq = (pi["cx"] - pj["cx"])**2 + (pi["cy"] - pj["cy"])**2
-            if dist_sq <= SPATIAL_GAP**2:
+            if dist_sq <= spatial_gap_px**2:
                 union(i, j)
 
     from collections import defaultdict
@@ -179,7 +193,7 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
                             best_dist = d_sq
                             best_idx = i
                             
-            if best_idx is not None and best_dist <= (SPATIAL_GAP * 1.5)**2:
+            if best_idx is not None and best_dist <= (spatial_gap_px * 1.5)**2:
                 large_groups[best_idx].extend(sg)
             else:
                 large_groups.append(sg)
@@ -348,7 +362,8 @@ def main():
         m = re.search(r"pair(\d+)_tile_col_(\d+)_row_(\d+)", os.path.basename(f))
         if m: pair_to_offset[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
 
-    pair_to_zone = roof_zone_mapping(pair_to_offset, db_step3)
+    gap_dinamico_px = calcola_spatial_gap_dinamico(IR_MOSAIC, gap_metri_max=1.5)
+    pair_to_zone = roof_zone_mapping(pair_to_offset, db_step3, spatial_gap_px=gap_dinamico_px)
 
     lat_drone, lon_drone = estrai_gps_da_drone()
     if lat_drone is not None:
