@@ -4,6 +4,7 @@ import json
 import struct
 import cv2
 import numpy as np
+import rasterio
 from PIL import Image, ExifTags
 from tqdm import tqdm
 
@@ -13,12 +14,12 @@ TERM_DIR        = os.path.join(BASE_DIR, "risultati_finali", "analisi_termica")
 PAIR_DIR        = os.path.join(BASE_DIR, "risultati_finali", "pair")
 EFF_DIR         = os.path.join(BASE_DIR, "risultati_finali", "efficienza_risultati")
 FOTO_DRONE_DIR  = os.path.join(BASE_DIR, "foto_drone")
+IR_MOSAIC       = os.path.join(BASE_DIR, "ortomosaicoir.tif")
 
 ETA_NOMINAL = 0.165
 GAMMA       = -0.0042
 EPSILON     = 0.90
 T_AMB       = 25.0
-
 
 
 def estrai_metadati_da_drone():
@@ -112,11 +113,30 @@ def carica_pair_to_offset():
     return mapping
 
 
-ANGLE_GAP     = 15.0   
-SPATIAL_GAP   = 200    
-MIN_ZONE_SIZE = 12     # Sotto i 12 pannelli è considerata una micro-area (rumore)
+def calcola_spatial_gap_dinamico(mosaic_path, gap_metri_max=1.0):
+    """
+    Legge il GSD dall'ortomosaico e calcola quanti pixel corrispondono
+    alla distanza fisica in metri specificata (gap_metri_max).
+    """
+    try:
+        with rasterio.open(mosaic_path) as src:
+            res_x, res_y = src.res
+            if src.crs and src.crs.is_geographic:
+                gsd_metri = res_x * 111320.0
+            else:
+                gsd_metri = res_x
+                
+            pixel_gap = max(50, int(gap_metri_max / gsd_metri))
+            print(f"[*] GSD rilevato: {gsd_metri*100:.2f} cm/px | {gap_metri_max} m equivalgono a {pixel_gap} px")
+            return pixel_gap
+    except Exception as e:
+        print(f"[!] Errore nel calcolo del GSD, uso valore di default (200 px). Errore: {e}")
+        return 200
 
-def roof_zone_mapping(pair_to_offset, db_pannelli):
+ANGLE_GAP     = 15.0   
+MIN_ZONE_SIZE = 12     
+
+def roof_zone_mapping(pair_to_offset, db_pannelli, spatial_gap_px):
     """
     1. Union-Find base (Distanza + Angolo) per separare le falde.
     2. Post-Processing "Safe": Assorbe le micro-aree (<12 pannelli) nella macro-area più vicina.
@@ -183,7 +203,7 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
                 continue
                 
             dist_sq = (pi["cx"] - pj["cx"])**2 + (pi["cy"] - pj["cy"])**2
-            if dist_sq <= SPATIAL_GAP**2:
+            if dist_sq <= spatial_gap_px**2:
                 union(i, j)
 
     from collections import defaultdict
@@ -217,7 +237,7 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
                             best_idx = i
                             
             # Se la macro-area è abbastanza vicina, assorbi il gruppetto
-            if best_idx is not None and best_dist <= (SPATIAL_GAP * 1.5)**2:
+            if best_idx is not None and best_dist <= (spatial_gap_px * 1.5)**2:
                 large_groups[best_idx].extend(sg)
             else:
                 # Altrimenti rimane una falda a sé (caso raro)
@@ -282,7 +302,9 @@ def main():
         db_termico = json.load(f)
 
     pair_to_offset = carica_pair_to_offset()
-    pair_to_zone = roof_zone_mapping(pair_to_offset, db_termico)
+
+    gap_dinamico_px = calcola_spatial_gap_dinamico(IR_MOSAIC, gap_metri_max=1.5)
+    pair_to_zone = roof_zone_mapping(pair_to_offset, db_termico, spatial_gap_px=gap_dinamico_px)
 
     # ── Prima passata: efficienza pannelli sani per zona ─────────────────────
     sani_per_zona = {}
