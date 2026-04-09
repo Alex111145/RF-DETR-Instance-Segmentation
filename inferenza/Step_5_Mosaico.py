@@ -235,7 +235,13 @@ def genera_report_pdf_a2a(dati, pdf_path):
     
     # Singola riga totale per i difettosi
     cv2.putText(canvas, "Perdita Totale (Moduli Difettosi):", (col1_x + 40, y_cursor + 115), cv2.FONT_HERSHEY_SIMPLEX, 0.8, C_DANGER, 2)
-    cv2.putText(canvas, f"EUR {dati['perdita_euro_totale']:.2f}", (col1_x + 450, y_cursor + 115), cv2.FONT_HERSHEY_SIMPLEX, 1.4, C_DANGER, 3)
+    
+    # Calcolo dinamico della larghezza del testo per allinearlo perfettamente a destra
+    testo_importo = f"EUR {dati['perdita_euro_totale']:.2f}"
+    (text_width, _), _ = cv2.getTextSize(testo_importo, cv2.FONT_HERSHEY_SIMPLEX, 1.4, 3)
+    x_right_align = (w - 80) - text_width - 40 # Scatola finisce a (w-80), meno 40 di padding
+    
+    cv2.putText(canvas, testo_importo, (x_right_align, y_cursor + 115), cv2.FONT_HERSHEY_SIMPLEX, 1.4, C_DANGER, 3)
 
     # Top 5 Moduli
     y_cursor += box_h + 80
