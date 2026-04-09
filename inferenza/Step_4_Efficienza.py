@@ -113,7 +113,7 @@ def carica_pair_to_offset():
 
 
 ANGLE_GAP     = 15.0   
-SPATIAL_GAP   = 800    
+SPATIAL_GAP   = 200    
 MIN_ZONE_SIZE = 12     # Sotto i 12 pannelli è considerata una micro-area (rumore)
 
 def roof_zone_mapping(pair_to_offset, db_pannelli):
