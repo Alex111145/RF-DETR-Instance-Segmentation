@@ -54,8 +54,6 @@ def estrai_metadati_da_drone():
             lon = conv(gps["GPSLongitude"], gps["GPSLongitudeRef"])
 
             # Parametri termici dal MakerNote DJI (IFD little-endian, tag tipo FLOAT=11)
-            #   0x2002 = T_amb        (°C)
-            #   0x2004 = Emissività   (0.0 – 1.0)
             t_amb    = None
             epsilon  = None
             maker = exif_data.get(37500, b'')
@@ -99,13 +97,11 @@ def scegli_tecnologia():
 
 
 def parse_pair_num(img_name):
-    """Estrae il numero pair dal nome file (es: pair3_patch.jpg → 3)."""
     m = re.search(r"pair(\d+)_", img_name)
     return int(m.group(1)) if m else None
 
 
 def carica_pair_to_offset():
-    """Ricostruisce pair_N → (col_off, row_off) dalla cartella di registrazione."""
     import glob
     reg_dir = os.path.join(BASE_DIR, "risultati_finali", "registrazione_allineamento")
     mapping = {}
@@ -116,13 +112,14 @@ def carica_pair_to_offset():
     return mapping
 
 
-ANGLE_GAP   = 15.0   # gradi — max differenza d'angolo nella stessa falda
-SPATIAL_GAP = 800    # pixel — max distanza tra patch della stessa falda
+ANGLE_GAP     = 15.0   
+SPATIAL_GAP   = 800    
+MIN_ZONE_SIZE = 8      
 
 def roof_zone_mapping(pair_to_offset, db_pannelli):
     """
-    Determina le zone delle falde del tetto a livello di SINGOLO PANNELLO 
-    combinando angolazione e prossimità spaziale tramite Union-Find.
+    1. Union-Find base (Distanza + Angolo)
+    2. ASSORBIMENTO CONVEX HULL: Le zone interne a un'altra falda vengono assorbite forzatamente.
     """
     panels_data = [] 
     
@@ -130,9 +127,7 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
         m = re.search(r"pair(\d+)_", img_name)
         if not m: continue
         pair_num = int(m.group(1))
-        
-        if pair_num not in pair_to_offset:
-            continue
+        if pair_num not in pair_to_offset: continue
             
         col_off, row_off = pair_to_offset[pair_num]
         
@@ -145,9 +140,8 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
             rect = cv2.minAreaRect(pts_arr)
             a = rect[2]
             w, h = rect[1]
-            if w < h:
-                a += 90.0
-            a = a % 180.0  # CORRETTO: 180 gradi per distinguere orientamenti ortogonali
+            if w < h: a += 90.0
+            a = a % 180.0
             
             M = cv2.moments(pts_arr)
             if M["m00"] != 0:
@@ -158,14 +152,12 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
                 
             panels_data.append({
                 "id": (img_name, idx),
-                "pair": pair_num,
                 "angle": a,
                 "cx": cx,
-                "cy": cy
+                "cy": cy,
             })
 
     if not panels_data:
-        print("[*] Nessun pannello trovato — zona unica.")
         return {}
 
     n = len(panels_data)
@@ -180,12 +172,12 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
     def union(x, y):
         parent[find(x)] = find(y)
 
-    # Aggiunta barra di caricamento tqdm per il processo Union-Find
-    for i in tqdm(range(n), desc="Mappatura falde (Union-Find)"):
+    # 1. Clustering iniziale
+    for i in tqdm(range(n), desc="Mappatura falde (Fase 1)"):
         for j in range(i + 1, n):
             pi, pj = panels_data[i], panels_data[j]
             ad = abs(pi["angle"] - pj["angle"])
-            ad = min(ad, 180.0 - ad)  # Distanza circolare corretta su 180°
+            ad = min(ad, 180.0 - ad)
             if ad > ANGLE_GAP:
                 continue
                 
@@ -198,11 +190,75 @@ def roof_zone_mapping(pair_to_offset, db_pannelli):
     for i in range(n):
         comps[find(i)].append(panels_data[i])
         
-    sorted_comps = sorted(comps.values(), key=len, reverse=True)
+    groups = list(comps.values())
+
+    # 2. Post-Processing: Assorbimento in base al Convex Hull (Nessuna area dentro un'altra)
+    merged_any = True
+    while merged_any:
+        merged_any = False
+        groups.sort(key=len, reverse=True)
+        merged_indices = set()
+        
+        for i in range(len(groups)):
+            if i in merged_indices: continue
+            compA = groups[i]
+            if len(compA) < 3: continue
+            
+            # Crea l'inviluppo convesso della falda grande
+            ptsA = np.array([[p["cx"], p["cy"]] for p in compA], dtype=np.float32)
+            hullA = cv2.convexHull(ptsA)
+            
+            for j in range(i + 1, len(groups)):
+                if j in merged_indices: continue
+                compB = groups[j]
+                
+                inside_count = 0
+                for pB in compB:
+                    # Verifica se il pannello B è dentro (o a contatto) della falda A
+                    dist = cv2.pointPolygonTest(hullA, (float(pB["cx"]), float(pB["cy"])), measureDist=True)
+                    if dist >= -250: # Tolleranza di margine per i bordi interni
+                        inside_count += 1
+                        
+                # Se la maggior parte della zona B cade dentro la zona A, assorbila tutta
+                if inside_count >= len(compB) * 0.5:
+                    compA.extend(compB)
+                    merged_indices.add(j)
+                    merged_any = True
+                    
+        groups = [groups[k] for k in range(len(groups)) if k not in merged_indices]
+
+    # 3. Pulizia finale: assorbi micro-aree rimanenti alla più vicina
+    final_groups = []
+    small_groups = []
+    
+    for g in groups:
+        if len(g) >= MIN_ZONE_SIZE:
+            final_groups.append(g)
+        else:
+            small_groups.append(g)
+            
+    if final_groups and small_groups:
+        for sg in small_groups:
+            best_dist = float('inf')
+            best_idx = None
+            for i, fg in enumerate(final_groups):
+                for p in sg:
+                    for fp in fg:
+                        d_sq = (p["cx"] - fp["cx"])**2 + (p["cy"] - fp["cy"])**2
+                        if d_sq < best_dist:
+                            best_dist = d_sq
+                            best_idx = i
+            if best_idx is not None and best_dist <= (SPATIAL_GAP * 2)**2:
+                final_groups[best_idx].extend(sg)
+            else:
+                final_groups.append(sg)
+    elif not final_groups:
+        final_groups = groups
+
+    sorted_comps = sorted(final_groups, key=len, reverse=True)
 
     result = {}
     print(f"\n[*] Zone (falde) rilevate: {len(sorted_comps)}")
-    
     for zone_id, comp in enumerate(sorted_comps, 1):
         angoli = [p["angle"] for p in comp]
         print(f"    Zona {zone_id}: {len(comp)} pannelli, angolo medio = {np.mean(angoli):.1f}°")
@@ -226,7 +282,6 @@ def main():
     global ETA_NOMINAL, GAMMA, T_AMB, EPSILON
     ETA_NOMINAL, GAMMA = scegli_tecnologia()
 
-    # Lettura parametri termici dal MakerNote DJI delle foto drone
     lat, lon, t_amb, epsilon = estrai_metadati_da_drone()
 
     print("\n[*] Parametri termici estratti dal MakerNote DJI:")
@@ -256,14 +311,11 @@ def main():
     with open(json_in, "r") as f:
         db_termico = json.load(f)
 
-    # Mappa pair_N → (col_off, row_off)
     pair_to_offset = carica_pair_to_offset()
-    print(f"[*] Pair caricati: {len(pair_to_offset)}")
-
     pair_to_zone = roof_zone_mapping(pair_to_offset, db_termico)
 
     # ── Prima passata: efficienza pannelli sani per zona ─────────────────────
-    sani_per_zona = {}   # zone_id → [eta_abs, ...]
+    sani_per_zona = {}
     for img_name, rilevamenti in db_termico.items():
         for i, d in enumerate(rilevamenti):
             zone_id  = pair_to_zone.get((img_name, i), 1)
@@ -308,11 +360,11 @@ def main():
             salute_rel = min(100.0, (eta_ass / max_eta_rif * 100)) if max_eta_rif > 0 else 0
             
             if d.get("class_id") == 1:
-                color = (0, 0, 255)    # Rosso  – hotspot / difettoso
+                color = (0, 0, 255)
             elif salute_rel < 90:
-                color = (0, 255, 255)  # Giallo – sano ma degradato (<90%)
+                color = (0, 255, 255)
             else:
-                color = (0, 255, 0)    # Verde  – ottimale
+                color = (0, 255, 0)
             
             if 'points' in d and d['points']:
                 pts = np.array(d['points'], dtype=np.int32)
@@ -325,12 +377,10 @@ def main():
                     cX = int(M["m10"] / M["m00"])
                     cY = int(M["m01"] / M["m00"])
                 else:
-               
                     cX, cY = pts[0][0], pts[0][1]
 
                 label = f"P{i+1}: {salute_rel:.1f}% ({label_temp})"
                 
-              
                 font = cv2.FONT_HERSHEY_SIMPLEX
                 scale = 0.45
                 thickness = 1
@@ -338,11 +388,9 @@ def main():
          
                 text_pos = (cX - w // 2, cY + h // 2)
 
-                
                 cv2.putText(canvas, label, text_pos, font, scale, (0,0,0), 3, cv2.LINE_AA)
                 cv2.putText(canvas, label, text_pos, font, scale, (255,255,255), thickness, cv2.LINE_AA)
       
-
             analisi_patch.append({
                 "id": i + 1,
                 "label": d.get("label"),
