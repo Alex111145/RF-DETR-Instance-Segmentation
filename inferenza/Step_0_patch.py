@@ -10,7 +10,7 @@ import numpy as np
 BASE_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUT_DIR = os.path.join(BASE_DIR, "risultati_finali")
 
-TILE_SIZE   = 640   
+TILE_SIZE   = 504  
 OVERLAP     = 0.50   
 MIN_CONTENT = 0.30   
 
