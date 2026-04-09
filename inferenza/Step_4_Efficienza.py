@@ -11,10 +11,29 @@ TERM_DIR = os.path.join(BASE_DIR, "risultati_finali", "analisi_termica")
 PAIR_DIR = os.path.join(BASE_DIR, "risultati_finali", "pair")
 EFF_DIR  = os.path.join(BASE_DIR, "risultati_finali", "efficienza_risultati")
 
-ETA_NOMINAL = 0.18    
-GAMMA       = -0.0035 
-EPSILON     = 0.90    
-T_AMB       = 25.0    
+ETA_NOMINAL = 0.165
+GAMMA       = -0.0042
+EPSILON     = 0.90
+T_AMB       = 25.0
+
+
+def scegli_tecnologia():
+    print("\n" + "="*55)
+    print(" SELEZIONE TECNOLOGIA PANNELLO FOTOVOLTAICO")
+    print("="*55)
+    print(" 1. Policristallino      (η_nom=16.5%,  γ=-0.42%/°C)")
+    print(" 2. Monocristallino PERC (η_nom=20.0%,  γ=-0.37%/°C)")
+    print("="*55)
+    while True:
+        scelta = input(" Inserisci la scelta [1/2]: ").strip()
+        if scelta == "1":
+            print(" [OK] Parametri Policristallino selezionati.\n")
+            return 0.165, -0.0042
+        elif scelta == "2":
+            print(" [OK] Parametri Monocristallino PERC selezionati.\n")
+            return 0.20, -0.0037
+        else:
+            print(" [!] Scelta non valida. Inserire 1 o 2.")
 
 
 def calcola_efficienza_termodinamica(t_c):
@@ -28,6 +47,9 @@ def calcola_efficienza_termodinamica(t_c):
     except: return 0.0
 
 def main():
+    global ETA_NOMINAL, GAMMA
+    ETA_NOMINAL, GAMMA = scegli_tecnologia()
+
     os.makedirs(EFF_DIR, exist_ok=True)
     json_in = os.path.join(TERM_DIR, "analisi_dati.json")
     
@@ -72,8 +94,12 @@ def main():
             eta_ass = calcola_efficienza_termodinamica(t_rif)
             salute_rel = min(100.0, (eta_ass / max_eta_rif * 100)) if max_eta_rif > 0 else 0
             
-            is_damaged = (d.get("class_id") == 1 or salute_rel < 90)
-            color = (0, 0, 255) if is_damaged else (0, 255, 0)
+            if d.get("class_id") == 1:
+                color = (0, 0, 255)    # Rosso  – hotspot / difettoso
+            elif salute_rel < 90:
+                color = (0, 255, 255)  # Giallo – sano ma degradato (<90%)
+            else:
+                color = (0, 255, 0)    # Verde  – ottimale
             
             if 'points' in d and d['points']:
                 pts = np.array(d['points'], dtype=np.int32)
