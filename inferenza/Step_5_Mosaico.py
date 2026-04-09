@@ -57,6 +57,36 @@ COLOR_ROSSO  = (255, 0, 0)
 # ==============================================================================
 # FUNZIONI DI SUPPORTO E CORREZIONE DERIVA
 # ==============================================================================
+def estrai_gps_da_drone():
+    """Legge la prima foto drone disponibile ed estrae le coordinate GPS dall'EXIF."""
+    foto_dir = os.path.join(BASE_DIR, "foto_drone")
+    if not os.path.isdir(foto_dir):
+        return None, None
+    for fname in sorted(os.listdir(foto_dir)):
+        if not fname.lower().endswith(('.jpg', '.jpeg')):
+            continue
+        try:
+            img = Image.open(os.path.join(foto_dir, fname))
+            exif_data = img._getexif()
+            if not exif_data:
+                continue
+            tags = {ExifTags.TAGS.get(k, k): v for k, v in exif_data.items()}
+            gps_raw = tags.get("GPSInfo", {})
+            gps = {ExifTags.GPSTAGS.get(k, k): v for k, v in gps_raw.items()}
+            if "GPSLatitude" not in gps:
+                continue
+            def conv(coord, ref):
+                d, m, s = coord
+                v = float(d) + float(m) / 60 + float(s) / 3600
+                return -v if ref in ('S', 'W') else v
+            lat = conv(gps["GPSLatitude"],  gps["GPSLatitudeRef"])
+            lon = conv(gps["GPSLongitude"], gps["GPSLongitudeRef"])
+            return lat, lon
+        except:
+            continue
+    return None, None
+
+
 def get_pvgis_esh(lat, lon):
     try:
         url = f"https://re.jrc.ec.europa.eu/api/v5_2/PVcalc?lat={lat}&lon={lon}&peakpower=1&loss=14&outputformat=json"
@@ -253,7 +283,15 @@ def main():
         if m:
             pair_to_offset[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
 
-    esh = 3.18 # Default
+    # ESH da PVGIS usando coordinate GPS reali dal drone
+    lat_drone, lon_drone = estrai_gps_da_drone()
+    if lat_drone is not None:
+        print(f"[*] Coordinate volo: {lat_drone:.5f}°N, {lon_drone:.5f}°E — interrogo PVGIS...")
+        esh = get_pvgis_esh(lat_drone, lon_drone)
+        print(f"[*] ESH da PVGIS: {esh:.2f} ore/giorno")
+    else:
+        esh = 3.18
+        print(f"[!] GPS non trovato nelle foto drone. Uso ESH default: {esh} ore/giorno")
 
     pannelli_globali = []
 
@@ -350,7 +388,7 @@ def main():
     # Disegno e Salvataggio CSV
     with open(CSV_UNICI, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["ID", "Stato", "Salute_%", "Perdita_€_Anno"])
+        writer.writerow(["ID", "Stato", "Salute_%", "kWh_persi_anno", "Perdita_€_Anno"])
         for p in unici:
             label_txt = f"#{p['id']} {p['eta']:.0f}%"
             # RGB
@@ -359,7 +397,9 @@ def main():
             # IR
             cv2.drawContours(ir_canvas, p['ir_contour'], -1, p['color'], 4)
             testo_centrato(ir_canvas, label_txt, p['ir_centroid'][0], p['ir_centroid'][1], p['color'])
-            writer.writerow([p['id'], p['stato'], round(p['eta'], 2), round(p['euro_persi'], 2)])
+            is_problematic = p['stato'] == "DIFETTOSO" or p['eta'] < 90
+            kwh_csv = round(p['kwh_persi'], 2) if is_problematic else ""
+            writer.writerow([p['id'], p['stato'], round(p['eta'], 2), kwh_csv, round(p['euro_persi'], 2)])
 
     # Export Mappa RGB
     profile = src_rgb.profile.copy()
