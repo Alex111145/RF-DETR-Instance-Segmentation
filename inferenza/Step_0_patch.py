@@ -11,8 +11,8 @@ BASE_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUT_DIR = os.path.join(BASE_DIR, "risultati_finali")
 
 TILE_SIZE   = 504  
-OVERLAP     = 0.50   
-MIN_CONTENT = 0.20   
+OVERLAP     = 0.30   
+MIN_CONTENT = 0.10   
 
 
 
