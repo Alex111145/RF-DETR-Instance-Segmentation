@@ -201,7 +201,7 @@ def genera_report_pdf_a2a(dati, pdf_path):
     cv2.putText(canvas, "TOP 5 MODULI CRITICI (DA SOSTITUIRE)", (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_DANGER, 2)
     y_cursor += 50
     for wp in dati['worst_panels']:
-        txt = f"ID #{wp['id']} - Salute: {wp['eta']:.1f}% - Perdita Stimata: EUR {wp['euro_persi']:.2f}"
+        txt = f"ID #{wp['id']} - Salute: {wp['eta']:.1f}% - kWh persi/anno: {wp['kwh_persi']:.1f} - EUR {wp['euro_persi']:.2f}/anno"
         cv2.putText(canvas, txt, (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_TEXT, 1)
         y_cursor += 40
 
@@ -316,13 +316,15 @@ def main():
             # Calcolo economico basato sull'efficienza del JSON
             p_max = 350 # Watt nominali stimati per pannello
             p_persa = p_max * (1 - (d_json["salute"]/100))
-            euro_p = (p_persa / 1000) * esh * GIORNI_UTIL * COSTO_KWH
+            kwh_persi_anno = (p_persa / 1000) * esh * GIORNI_UTIL
+            euro_p = kwh_persi_anno * COSTO_KWH
 
             pannelli_globali.append({
                 'contour': m_cnt, 'centroid': (cx_corr, cy_corr),
                 'ir_contour': ir_cnt, 'ir_centroid': (cx_ir, cy_ir),
                 'eta': d_json["salute"],
                 'color': colore,
+                'kwh_persi': kwh_persi_anno,
                 'euro_persi': euro_p, 'stato': d_json["label"]
             })
 
@@ -374,12 +376,12 @@ def main():
     # Generazione Report PDF
     dati_rep = {
         'tot_pannelli': len(unici),
-        'tot_sani': len([p for p in unici if p['eta'] >= 90]),
-        'tot_degradati': len([p for p in unici if 80 <= p['eta'] < 90]),
-        'tot_rotti': len([p for p in unici if p['eta'] < 80]),
+        'tot_sani':      len([p for p in unici if p['stato'] != "DIFETTOSO" and p['eta'] >= 90]),
+        'tot_degradati': len([p for p in unici if p['stato'] != "DIFETTOSO" and p['eta'] < 90]),
+        'tot_rotti':     len([p for p in unici if p['stato'] == "DIFETTOSO"]),
         'eta_media_impianto': np.mean([p['eta'] for p in unici]) if unici else 0,
-        'perdita_euro': sum([p['euro_persi'] for p in unici]),
-        'worst_panels': sorted(unici, key=lambda x: x['eta'])[:5]
+        'perdita_euro': sum(p['euro_persi'] for p in unici if p['stato'] == "DIFETTOSO" or p['eta'] < 90),
+        'worst_panels': sorted([p for p in unici if p['stato'] == "DIFETTOSO"], key=lambda x: x['eta'])[:5]
     }
     genera_report_pdf_a2a(dati_rep, PDF_OUT_PATH)
 
