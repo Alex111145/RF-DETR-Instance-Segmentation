@@ -1,11 +1,10 @@
 
 import os
 import json
+import struct
 import cv2
 import numpy as np
-import urllib.request
 from PIL import Image, ExifTags
-from datetime import datetime
 from tqdm import tqdm
 
 
@@ -21,10 +20,15 @@ EPSILON     = 0.90
 T_AMB       = 25.0
 
 
-def estrai_gps_da_drone():
-    """Legge la prima foto drone disponibile ed estrae GPS + datetime dall'EXIF."""
+def estrai_metadati_da_drone():
+    """
+    Legge la prima foto drone disponibile ed estrae dal MakerNote DJI:
+      - GPS (lat, lon)
+      - T_amb  (tag 0x2002) = temperatura ambiente impostata in DJI Pilot (°C)
+      - Emissività (tag 0x2004) = emissività superficiale impostata in DJI Pilot
+    """
     if not os.path.isdir(FOTO_DRONE_DIR):
-        return None, None, None
+        return None, None, None, None
     for fname in sorted(os.listdir(FOTO_DRONE_DIR)):
         if not fname.lower().endswith(('.jpg', '.jpeg')):
             continue
@@ -33,7 +37,10 @@ def estrai_gps_da_drone():
             exif_data = img._getexif()
             if not exif_data:
                 continue
+
             tags = {ExifTags.TAGS.get(k, k): v for k, v in exif_data.items()}
+
+            # GPS
             gps_raw = tags.get("GPSInfo", {})
             gps = {ExifTags.GPSTAGS.get(k, k): v for k, v in gps_raw.items()}
             if "GPSLatitude" not in gps:
@@ -44,35 +51,31 @@ def estrai_gps_da_drone():
                 return -v if ref in ('S', 'W') else v
             lat = conv(gps["GPSLatitude"],  gps["GPSLatitudeRef"])
             lon = conv(gps["GPSLongitude"], gps["GPSLongitudeRef"])
-            dt_str = tags.get("DateTimeOriginal") or tags.get("DateTime")
-            return lat, lon, dt_str
+
+            # Parametri termici dal MakerNote DJI (IFD little-endian, tag tipo FLOAT=11)
+            #   0x2002 = T_amb        (°C)
+            #   0x2004 = Emissività   (0.0 – 1.0)
+            t_amb    = None
+            epsilon  = None
+            maker = exif_data.get(37500, b'')
+            if len(maker) >= 14:
+                num_entries = struct.unpack_from('<H', maker, 0)[0]
+                for i in range(min(num_entries, 50)):
+                    off = 2 + i * 12
+                    if off + 12 > len(maker):
+                        break
+                    tag, typ, cnt = struct.unpack_from('<HHI', maker, off)
+                    if typ == 11 and cnt == 1:
+                        val = struct.unpack_from('<f', maker, off + 8)[0]
+                        if tag == 0x2002:
+                            t_amb   = val
+                        elif tag == 0x2004:
+                            epsilon = val
+
+            return lat, lon, t_amb, epsilon
         except:
             continue
-    return None, None, None
-
-
-def get_t_amb_openmeteo(lat, lon, dt_str):
-    """Interroga OpenMeteo Historical API per la temperatura al momento del volo."""
-    try:
-        dt = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
-        date_str = dt.strftime("%Y-%m-%d")
-        hour = dt.hour
-        url = (
-            f"https://archive-api.open-meteo.com/v1/archive?"
-            f"latitude={lat:.5f}&longitude={lon:.5f}"
-            f"&start_date={date_str}&end_date={date_str}"
-            f"&hourly=temperature_2m&timezone=auto"
-        )
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode())
-            temps = data["hourly"]["temperature_2m"]
-            t = float(temps[hour])
-            print(f"[*] T_amb da OpenMeteo ({date_str} ore {hour:02d}:00): {t:.1f}°C")
-            return t
-    except Exception as e:
-        print(f"[!] OpenMeteo non disponibile ({e}). Uso T_amb default: {T_AMB}°C")
-        return None
+    return None, None, None, None
 
 
 def scegli_tecnologia():
@@ -105,18 +108,28 @@ def calcola_efficienza_termodinamica(t_c):
     except: return 0.0
 
 def main():
-    global ETA_NOMINAL, GAMMA, T_AMB
+    global ETA_NOMINAL, GAMMA, T_AMB, EPSILON
     ETA_NOMINAL, GAMMA = scegli_tecnologia()
 
-    # Estrazione GPS dalle foto drone e temperatura ambiente da OpenMeteo
-    lat, lon, dt_str = estrai_gps_da_drone()
-    if lat is not None and dt_str is not None:
-        print(f"[*] Coordinate volo rilevate: {lat:.5f}°N, {lon:.5f}°E  —  {dt_str}")
-        t_meteo = get_t_amb_openmeteo(lat, lon, dt_str)
-        if t_meteo is not None:
-            T_AMB = t_meteo
+    # Lettura parametri termici dal MakerNote DJI delle foto drone
+    lat, lon, t_amb, epsilon = estrai_metadati_da_drone()
+
+    print("\n[*] Parametri termici estratti dal MakerNote DJI:")
+    if lat is not None:
+        print(f"    Coordinate volo : {lat:.5f}°N, {lon:.5f}°E")
+
+    if t_amb is not None and t_amb != 0.0:
+        T_AMB = round(float(t_amb), 2)
+        print(f"    T_amb           : {T_AMB:.1f}°C  (dal metadato drone)")
     else:
-        print(f"[!] GPS non trovato nelle foto drone. Uso T_amb default: {T_AMB}°C")
+        print(f"    T_amb           : {T_AMB:.1f}°C  (default — non trovata nei metadati)")
+
+    if epsilon is not None and 0.0 < epsilon <= 1.0:
+        EPSILON = round(float(epsilon), 4)
+        print(f"    Emissività (ε)  : {EPSILON:.4f}  (dal metadato drone)")
+    else:
+        print(f"    Emissività (ε)  : {EPSILON:.4f}  (default — non trovata nei metadati)")
+    print()
 
     os.makedirs(EFF_DIR, exist_ok=True)
     json_in = os.path.join(TERM_DIR, "analisi_dati.json")
