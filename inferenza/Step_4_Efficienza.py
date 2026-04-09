@@ -1,5 +1,6 @@
 
 import os
+import re
 import json
 import struct
 import cv2
@@ -18,6 +19,11 @@ ETA_NOMINAL = 0.165
 GAMMA       = -0.0042
 EPSILON     = 0.90
 T_AMB       = 25.0
+
+# Raggio della finestra locale (in frazione dell'estensione totale del campo).
+# 0.25 = ogni pannello viene confrontato con i vicini entro il 25% della dimensione del campo.
+# Abbassa il valore se est/sud sono molto ravvicinati; alzalo se il campo è piccolo.
+FRAZIONE_RAGGIO_LOCALE = 0.25
 
 
 def estrai_metadati_da_drone():
@@ -97,6 +103,60 @@ def scegli_tecnologia():
             print(" [!] Scelta non valida. Inserire 1 o 2.")
 
 
+def parse_pair_num(img_name):
+    """Estrae il numero pair dal nome file (es: pair3_patch.jpg → 3)."""
+    m = re.search(r"pair(\d+)_", img_name)
+    return int(m.group(1)) if m else None
+
+
+def carica_pair_to_offset():
+    """
+    Legge i file nella cartella registrazione_allineamento e ricostruisce
+    la mappa pair_N → (col_off, row_off), identica a quella usata in Step 5.
+    """
+    import glob
+    reg_dir = os.path.join(BASE_DIR, "risultati_finali", "registrazione_allineamento")
+    mapping = {}
+    for f in glob.glob(os.path.join(reg_dir, "pair*_tile_col_*_row_*.jpg")):
+        m = re.search(r"pair(\d+)_tile_col_(\d+)_row_(\d+)", os.path.basename(f))
+        if m:
+            mapping[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
+    return mapping
+
+
+def eta_rif_locale(col, row, sani_map):
+    """
+    Riferimento di efficienza locale per un pannello in posizione (col, row).
+
+    Logica:
+    - Cerca tutti i pannelli sani (non hotspot) entro una finestra spaziale
+      pari a FRAZIONE_RAGGIO_LOCALE * estensione_campo in X e Y.
+    - Restituisce il MAX di efficienza in quella finestra: corrisponde al
+      pannello più freddo (più pulito) della stessa zona di esposizione.
+    - Se la finestra è vuota (zona isolata) usa il max globale come fallback.
+
+    Effetto: pannelli sud caldi ma uniformi → riferimento = miglior pannello
+    sud → appaiono sani. Pannello sporco (più caldo dei vicini) → efficienza
+    inferiore al riferimento locale → flaggato correttamente.
+    """
+    if not sani_map:
+        return ETA_NOMINAL
+
+    cols = [c for c, r, _ in sani_map]
+    rows = [r for _, r, _ in sani_map]
+
+    span_x = max(cols) - min(cols) if len(set(cols)) > 1 else 0
+    span_y = max(rows) - min(rows) if len(set(rows)) > 1 else 0
+
+    dx = span_x * FRAZIONE_RAGGIO_LOCALE if span_x > 0 else float('inf')
+    dy = span_y * FRAZIONE_RAGGIO_LOCALE if span_y > 0 else float('inf')
+
+    vicini = [e for c, r, e in sani_map
+              if abs(c - col) <= dx and abs(r - row) <= dy]
+
+    return max(vicini) if vicini else max(e for _, _, e in sani_map)
+
+
 def calcola_efficienza_termodinamica(t_c):
     if t_c is None or t_c == 0: return 0.0
     try:
@@ -141,23 +201,48 @@ def main():
     with open(json_in, "r") as f:
         db_termico = json.load(f)
 
-    lista_eta_sani = []
+    # Mappa pair_N → (col_off, row_off) dalla cartella di registrazione
+    pair_to_offset = carica_pair_to_offset()
+    print(f"[*] Offset spaziali caricati: {len(pair_to_offset)} pair trovati nella registrazione")
+
+    # ── Prima passata: mappa spaziale dei pannelli sani ──────────────────────
+    # Raccoglie (col_off, row_off, eta_assoluta) per ogni pannello non-hotspot.
+    # Il MAX locale di questa mappa diventa il riferimento per la zona corrispondente,
+    # separando automaticamente cluster con esposizioni diverse (est / sud / ecc.).
+    sani_map = []
     for img_name, rilevamenti in db_termico.items():
+        pair_num = parse_pair_num(img_name)
+        if pair_num not in pair_to_offset:
+            continue
+        col_off, row_off = pair_to_offset[pair_num]
         for d in rilevamenti:
             if d.get("class_id") != 1:
                 t = d.get("temp_media")
                 if t is not None:
-                    lista_eta_sani.append(calcola_efficienza_termodinamica(t))
-    
-    max_eta_rif = max(lista_eta_sani) if lista_eta_sani else ETA_NOMINAL
+                    sani_map.append((col_off, row_off,
+                                     calcola_efficienza_termodinamica(t)))
+
+    max_eta_globale = max(e for _, _, e in sani_map) if sani_map else ETA_NOMINAL
+
+    n_zone = len(set((c, r) for c, r, _ in sani_map))
+    print(f"[*] Riferimento locale attivo: {len(sani_map)} pannelli sani "
+          f"in {n_zone} posizioni — finestra {int(FRAZIONE_RAGGIO_LOCALE*100)}% del campo")
 
     dati_step4 = {}
-    
+
     for img_name, rilevamenti in tqdm(db_termico.items(), desc="Calcolo Efficienza"):
         img_path = os.path.join(PAIR_DIR, img_name)
         canvas = cv2.imread(img_path)
         if canvas is None: continue
-        
+
+        # Riferimento locale per questa patch
+        pair_num = parse_pair_num(img_name)
+        if pair_num in pair_to_offset and sani_map:
+            col_off, row_off = pair_to_offset[pair_num]
+            max_eta_rif = eta_rif_locale(col_off, row_off, sani_map)
+        else:
+            max_eta_rif = max_eta_globale
+
         overlay = canvas.copy()
         analisi_patch = []
 
