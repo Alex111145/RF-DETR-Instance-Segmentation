@@ -225,7 +225,7 @@ def genera_report_pdf_a2a(dati, pdf_path):
     rows = [
         ("Totale Moduli Rilevati", str(dati['tot_pannelli']), C_TEXT),
         ("Moduli Ottimali (Verde)", str(dati['tot_sani']), C_SUCCESS),
-        ("Moduli Degradati (Giallo)", str(dati['tot_degradati']), C_WARNING),
+        ("Moduli Sporchi (Giallo)", str(dati['tot_degradati']), C_WARNING),
         ("Moduli Critici (Rosso)", str(dati['tot_rotti']), C_DANGER)
     ]
     for label, val, color in rows:
@@ -238,13 +238,28 @@ def genera_report_pdf_a2a(dati, pdf_path):
 
     # Perdite Economiche
     y_cursor = 700
-    cv2.rectangle(canvas, (col1_x, y_cursor), (w-80, y_cursor+150), C_LIGHT, -1)
-    cv2.rectangle(canvas, (col1_x, y_cursor), (col1_x+10, y_cursor+150), C_WARNING, -1)
-    cv2.putText(canvas, "STIMA MANCATO GUADAGNO ANNUO", (col1_x + 40, y_cursor + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, C_TEXT, 2)
-    cv2.putText(canvas, f"EUR {dati['perdita_euro']:.2f}", (col1_x + 40, y_cursor + 110), cv2.FONT_HERSHEY_SIMPLEX, 1.8, C_WARNING, 4)
+    box_h = 270
+    cv2.rectangle(canvas, (col1_x, y_cursor), (w-80, y_cursor+box_h), C_LIGHT, -1)
+    cv2.rectangle(canvas, (col1_x, y_cursor), (col1_x+10, y_cursor+box_h), C_WARNING, -1)
+    cv2.putText(canvas, "STIMA MANCATO GUADAGNO ANNUO", (col1_x + 40, y_cursor + 45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, C_TEXT, 2)
+
+    # Riga 1 – Pannelli difettosi
+    cv2.putText(canvas, "Pannelli Difettosi (Rosso):", (col1_x + 40, y_cursor + 105), cv2.FONT_HERSHEY_SIMPLEX, 0.65, C_DANGER, 1)
+    cv2.putText(canvas, f"EUR {dati['perdita_euro_difettosi']:.2f}", (col1_x + 400, y_cursor + 105), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_DANGER, 2)
+
+    # Riga 2 – Pannelli sporchi
+    cv2.putText(canvas, "Pannelli Sporchi (Giallo):", (col1_x + 40, y_cursor + 160), cv2.FONT_HERSHEY_SIMPLEX, 0.65, C_WARNING, 1)
+    cv2.putText(canvas, f"EUR {dati['perdita_euro_sporchi']:.2f}", (col1_x + 400, y_cursor + 160), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_WARNING, 2)
+
+    # Separatore verticale + Blocco TOTALE a destra
+    sep_x = 680
+    cv2.line(canvas, (sep_x, y_cursor + 20), (sep_x, y_cursor + box_h - 20), (180, 180, 180), 2)
+    tot_x = sep_x + 30
+    cv2.putText(canvas, "TOTALE MANCATO GUADAGNO", (tot_x, y_cursor + 100), cv2.FONT_HERSHEY_SIMPLEX, 0.65, C_TEXT, 1)
+    cv2.putText(canvas, f"EUR {dati['perdita_euro_totale']:.2f}", (tot_x, y_cursor + 195), cv2.FONT_HERSHEY_SIMPLEX, 1.5, C_WARNING, 4)
 
     # Top 5 Moduli
-    y_cursor += 220
+    y_cursor += 340
     cv2.putText(canvas, "TOP 5 MODULI CRITICI (DA SOSTITUIRE)", (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_DANGER, 2)
     y_cursor += 50
     for wp in dati['worst_panels']:
@@ -432,13 +447,17 @@ def main():
         dst.write(np.transpose(ir_canvas, (2,0,1)))
 
     # Generazione Report PDF
+    perdita_difettosi = sum(p['euro_persi'] for p in unici if p['stato'] == "DIFETTOSO")
+    perdita_sporchi   = sum(p['euro_persi'] for p in unici if p['stato'] != "DIFETTOSO" and p['eta'] < 90)
     dati_rep = {
         'tot_pannelli': len(unici),
         'tot_sani':      len([p for p in unici if p['stato'] != "DIFETTOSO" and p['eta'] >= 90]),
         'tot_degradati': len([p for p in unici if p['stato'] != "DIFETTOSO" and p['eta'] < 90]),
         'tot_rotti':     len([p for p in unici if p['stato'] == "DIFETTOSO"]),
         'eta_media_impianto': np.mean([p['eta'] for p in unici]) if unici else 0,
-        'perdita_euro': sum(p['euro_persi'] for p in unici if p['stato'] == "DIFETTOSO" or p['eta'] < 90),
+        'perdita_euro_difettosi': perdita_difettosi,
+        'perdita_euro_sporchi':   perdita_sporchi,
+        'perdita_euro_totale':    perdita_difettosi + perdita_sporchi,
         'worst_panels': sorted([p for p in unici if p['stato'] == "DIFETTOSO"], key=lambda x: x['eta'])[:5]
     }
     genera_report_pdf_a2a(dati_rep, PDF_OUT_PATH)
