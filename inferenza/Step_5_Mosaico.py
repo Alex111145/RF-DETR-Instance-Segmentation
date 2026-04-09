@@ -31,8 +31,9 @@ RGB_MOSAIC      = os.path.join(BASE_DIR, "ortomosaicorgb.tif")
 WEIGHTS_PATH    = os.path.join(BASE_DIR, "weights.pt")
 
 # Output finali
-MAPPA_OUT_PATH     = os.path.join(OUTPUT_DIR, "mappa_efficienza_rgb.tif")
-MAPPA_IR_OUT_PATH  = os.path.join(OUTPUT_DIR, "mappa_efficienza_ir.tif")
+MAPPA_OUT_PATH        = os.path.join(OUTPUT_DIR, "mappa_efficienza_rgb.tif")
+MAPPA_IR_OUT_PATH     = os.path.join(OUTPUT_DIR, "mappa_efficienza_ir.tif")
+MAPPA_IR_DIFETTOSI    = os.path.join(OUTPUT_DIR, "mappa_ir_difettosi.tif")
 PDF_OUT_PATH    = os.path.join(OUTPUT_DIR, "report_tecnico.pdf")
 CSV_UNICI       = os.path.join(OUTPUT_DIR, "report_pannelli_unici.csv")
 
@@ -239,28 +240,37 @@ def genera_report_pdf_a2a(dati, pdf_path):
 
     # Perdite Economiche
     y_cursor = 700
-    box_h = 270
+    box_h = 300
     cv2.rectangle(canvas, (col1_x, y_cursor), (w-80, y_cursor+box_h), C_LIGHT, -1)
     cv2.rectangle(canvas, (col1_x, y_cursor), (col1_x+10, y_cursor+box_h), C_WARNING, -1)
     cv2.putText(canvas, "STIMA MANCATO GUADAGNO ANNUO", (col1_x + 40, y_cursor + 45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, C_TEXT, 2)
 
+    # Intestazione colonne
+    cv2.putText(canvas, "kWh/anno persi", (col1_x + 370, y_cursor + 78), cv2.FONT_HERSHEY_SIMPLEX, 0.55, C_TEXT, 1)
+    cv2.putText(canvas, "EUR/anno *",      (col1_x + 530, y_cursor + 78), cv2.FONT_HERSHEY_SIMPLEX, 0.55, C_TEXT, 1)
+
     # Riga 1 – Pannelli difettosi
-    cv2.putText(canvas, "Pannelli Difettosi (Rosso):", (col1_x + 40, y_cursor + 105), cv2.FONT_HERSHEY_SIMPLEX, 0.65, C_DANGER, 1)
-    cv2.putText(canvas, f"EUR {dati['perdita_euro_difettosi']:.2f}", (col1_x + 400, y_cursor + 105), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_DANGER, 2)
+    cv2.putText(canvas, "Pannelli Difettosi (Rosso):", (col1_x + 40, y_cursor + 118), cv2.FONT_HERSHEY_SIMPLEX, 0.65, C_DANGER, 1)
+    cv2.putText(canvas, f"{dati['kwh_difettosi']:.1f}",          (col1_x + 370, y_cursor + 118), cv2.FONT_HERSHEY_SIMPLEX, 0.8, C_DANGER, 2)
+    cv2.putText(canvas, f"{dati['perdita_euro_difettosi']:.2f}", (col1_x + 530, y_cursor + 118), cv2.FONT_HERSHEY_SIMPLEX, 0.8, C_DANGER, 2)
 
     # Riga 2 – Pannelli sporchi
-    cv2.putText(canvas, "Pannelli Sporchi (Giallo):", (col1_x + 40, y_cursor + 160), cv2.FONT_HERSHEY_SIMPLEX, 0.65, C_WARNING, 1)
-    cv2.putText(canvas, f"EUR {dati['perdita_euro_sporchi']:.2f}", (col1_x + 400, y_cursor + 160), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_WARNING, 2)
+    cv2.putText(canvas, "Pannelli Sporchi (Giallo):", (col1_x + 40, y_cursor + 175), cv2.FONT_HERSHEY_SIMPLEX, 0.65, C_WARNING, 1)
+    cv2.putText(canvas, f"{dati['kwh_sporchi']:.1f}",           (col1_x + 370, y_cursor + 175), cv2.FONT_HERSHEY_SIMPLEX, 0.8, C_WARNING, 2)
+    cv2.putText(canvas, f"{dati['perdita_euro_sporchi']:.2f}",  (col1_x + 530, y_cursor + 175), cv2.FONT_HERSHEY_SIMPLEX, 0.8, C_WARNING, 2)
 
-    # Separatore verticale + Blocco TOTALE a destra
-    sep_x = 680
+    # Nota asterisco
+    cv2.putText(canvas, "* prezzo energia: 0.40 EUR/kWh", (col1_x + 40, y_cursor + 218), cv2.FONT_HERSHEY_SIMPLEX, 0.48, C_TEXT, 1)
+
+    # Separatore verticale + Blocco TOTALE a destra (sep spostato a 760)
+    sep_x = 760
     cv2.line(canvas, (sep_x, y_cursor + 20), (sep_x, y_cursor + box_h - 20), (180, 180, 180), 2)
     tot_x = sep_x + 30
-    cv2.putText(canvas, "TOTALE MANCATO GUADAGNO", (tot_x, y_cursor + 100), cv2.FONT_HERSHEY_SIMPLEX, 0.65, C_TEXT, 1)
-    cv2.putText(canvas, f"EUR {dati['perdita_euro_totale']:.2f}", (tot_x, y_cursor + 195), cv2.FONT_HERSHEY_SIMPLEX, 1.5, C_WARNING, 4)
+    cv2.putText(canvas, "TOTALE MANCATO GUADAGNO", (tot_x, y_cursor + 90), cv2.FONT_HERSHEY_SIMPLEX, 0.65, C_TEXT, 1)
+    cv2.putText(canvas, f"EUR {dati['perdita_euro_totale']:.2f}", (tot_x, y_cursor + 210), cv2.FONT_HERSHEY_SIMPLEX, 1.5, C_WARNING, 4)
 
     # Top 5 Moduli
-    y_cursor += 340
+    y_cursor += 370
     cv2.putText(canvas, "TOP 5 MODULI CRITICI (DA SOSTITUIRE)", (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_DANGER, 2)
     y_cursor += 50
     for wp in dati['worst_panels']:
@@ -447,15 +457,33 @@ def main():
     with rasterio.open(MAPPA_IR_OUT_PATH, 'w', **profile_ir) as dst:
         dst.write(np.transpose(ir_canvas, (2,0,1)))
 
+    # Export Mappa IR — solo pannelli DIFETTOSI
+    difettosi = [p for p in unici if p['stato'] == "DIFETTOSO"]
+    if difettosi:
+        with rasterio.open(IR_MOSAIC) as src_ir2:
+            ir_diff = np.transpose(src_ir2.read([1, 2, 3]), (1, 2, 0)).copy()
+        for p in difettosi:
+            cv2.drawContours(ir_diff, p['ir_contour'], -1, COLOR_ROSSO, 4)
+            testo_centrato(ir_diff, f"#{p['id']}", p['ir_centroid'][0], p['ir_centroid'][1], COLOR_ROSSO)
+        with rasterio.open(MAPPA_IR_DIFETTOSI, 'w', **profile_ir) as dst:
+            dst.write(np.transpose(ir_diff, (2, 0, 1)))
+        print(f"[FINE] Mappa IR difettosi ({len(difettosi)} pannelli): {MAPPA_IR_DIFETTOSI}")
+    else:
+        print("[*] Nessun pannello DIFETTOSO trovato — mappa IR difettosi non generata.")
+
     # Generazione Report PDF
     perdita_difettosi = sum(p['euro_persi'] for p in unici if p['stato'] == "DIFETTOSO")
     perdita_sporchi   = sum(p['euro_persi'] for p in unici if p['stato'] != "DIFETTOSO" and p['eta'] < 90)
+    kwh_difettosi     = sum(p['kwh_persi']  for p in unici if p['stato'] == "DIFETTOSO")
+    kwh_sporchi       = sum(p['kwh_persi']  for p in unici if p['stato'] != "DIFETTOSO" and p['eta'] < 90)
     dati_rep = {
         'tot_pannelli': len(unici),
         'tot_sani':      len([p for p in unici if p['stato'] != "DIFETTOSO" and p['eta'] >= 90]),
         'tot_degradati': len([p for p in unici if p['stato'] != "DIFETTOSO" and p['eta'] < 90]),
         'tot_rotti':     len([p for p in unici if p['stato'] == "DIFETTOSO"]),
         'eta_media_impianto': np.mean([p['eta'] for p in unici]) if unici else 0,
+        'kwh_difettosi':          kwh_difettosi,
+        'kwh_sporchi':            kwh_sporchi,
         'perdita_euro_difettosi': perdita_difettosi,
         'perdita_euro_sporchi':   perdita_sporchi,
         'perdita_euro_totale':    perdita_difettosi + perdita_sporchi,
