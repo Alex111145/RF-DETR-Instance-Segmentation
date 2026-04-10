@@ -9,7 +9,6 @@ import cv2
 import numpy as np
 import rasterio
 import urllib.request
-from rasterio.warp import transform as transform_coords
 from PIL import Image, ExifTags
 from datetime import datetime
 from tqdm import tqdm
@@ -27,13 +26,11 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "risultati_finali")
 JSON_EFFICIENZA = os.path.join(OUTPUT_DIR, "efficienza_risultati", "efficienza_dati.json")
 PATCH_IR_DIR    = os.path.join(BASE_DIR, "training_patches_ir")
 IR_MOSAIC       = os.path.join(BASE_DIR, "ortomosaicoir.tif")
-RGB_MOSAIC      = os.path.join(BASE_DIR, "ortomosaicorgb.tif")
 WEIGHTS_PATH    = os.path.join(BASE_DIR, "weights.pt")
 
 # Output finali
-MAPPA_OUT_PATH           = os.path.join(OUTPUT_DIR, "mappa_efficienza_rgb.tif")
 MAPPA_IR_OUT_PATH        = os.path.join(OUTPUT_DIR, "mappa_efficienza_ir.tif")
-MAPPA_DIFETTOSI_OUT_PATH = os.path.join(OUTPUT_DIR, "mappa_difettosi_ir.tif") # <-- AGGIORNATO IN IR
+MAPPA_DIFETTOSI_OUT_PATH = os.path.join(OUTPUT_DIR, "mappa_difettosi_ir.tif")
 PDF_OUT_PATH             = os.path.join(OUTPUT_DIR, "report_tecnico.pdf")
 CSV_UNICI                = os.path.join(OUTPUT_DIR, "report_pannelli_unici.csv")
 
@@ -59,7 +56,7 @@ COLOR_GIALLO = (255, 255, 0)
 COLOR_ROSSO  = (255, 0, 0)
 
 # ==============================================================================
-# FUNZIONI DI SUPPORTO E CORREZIONE DERIVA
+# FUNZIONI DI SUPPORTO
 # ==============================================================================
 def estrai_gps_da_drone():
     """Legge la prima foto drone disponibile ed estrae le coordinate GPS dall'EXIF."""
@@ -140,62 +137,6 @@ def disegna_grafico_a_ciambella(canvas, cx, cy, r, eta_media_pct):
     label = f"{eta_media_pct:.1f}%"
     (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 1.8, 4)
     cv2.putText(canvas, label, (cx - tw//2, cy + th//2), cv2.FONT_HERSHEY_SIMPLEX, 1.8, C_TEXT, 4, cv2.LINE_AA)
-
-def correggi_deriva_locale(rgb_canvas, m_cnt):
-    pts = m_cnt.reshape(-1, 2)
-    x_min, y_min = np.min(pts, axis=0)
-    x_max, y_max = np.max(pts, axis=0)
-    
-    w = x_max - x_min
-    h = y_max - y_min
-    if w < 10 or h < 10:
-        return m_cnt
-        
-    cx, cy = x_min + w//2, y_min + h//2
-    pad_x, pad_y = int(w * 0.8), int(h * 0.8) 
-    h_canvas, w_canvas = rgb_canvas.shape[:2]
-    
-    x1 = max(0, cx - pad_x)
-    y1 = max(0, cy - pad_y)
-    x2 = min(w_canvas, cx + pad_x)
-    y2 = min(h_canvas, cy + pad_y)
-    
-    roi = rgb_canvas[y1:y2, x1:x2]
-    if roi.size == 0: return m_cnt
-    
-    gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, thresh = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    area_attesa = w * h
-    miglior_centro = None
-    min_dist = float('inf')
-    roi_cx_local, roi_cy_local = cx - x1, cy - y1
-    
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area_attesa * 0.4 < area < area_attesa * 1.6:
-            M = cv2.moments(cnt)
-            if M["m00"] != 0:
-                cX_local = int(M["m10"] / M["m00"])
-                cY_local = int(M["m01"] / M["m00"])
-                
-                dist = np.sqrt((cX_local - roi_cx_local)**2 + (cY_local - roi_cy_local)**2)
-                if dist < min_dist:
-                    min_dist = dist
-                    miglior_centro = (cX_local, cY_local)
-    
-    if miglior_centro is not None:
-        shift_x = miglior_centro[0] - roi_cx_local
-        shift_y = miglior_centro[1] - roi_cy_local
-        if abs(shift_x) < w and abs(shift_y) < h:
-            shift_array = np.array([shift_x, shift_y], dtype=np.int32)
-            return m_cnt + shift_array
-            
-    return m_cnt
 
 # ==============================================================================
 # GENERAZIONE PDF
@@ -278,20 +219,9 @@ def main():
     with open(JSON_EFFICIENZA, "r") as f:
         db_step4 = json.load(f)
 
-    # Inizializzazione Mosaici
+    # Inizializzazione Mosaico IR
     src_ir = rasterio.open(IR_MOSAIC)
-    src_rgb = rasterio.open(RGB_MOSAIC)
-    rgb_canvas = np.transpose(src_rgb.read([1,2,3]), (1,2,0)).copy()
     ir_canvas  = np.transpose(src_ir.read([1,2,3]), (1,2,0)).copy()
-
-    # Calcolo Scala da GeoTIFF (IR vs RGB)
-    res_x_ir, res_y_ir = abs(src_ir.transform.a), abs(src_ir.transform.e)
-    res_x_rgb, res_y_rgb = abs(src_rgb.transform.a), abs(src_rgb.transform.e)
-
-    scale_x = res_x_ir / res_x_rgb
-    scale_y = res_y_ir / res_y_rgb
-    
-    print(f"[*] Fattori di scala calcolati da GeoTIFF -> X: {scale_x:.2f}, Y: {scale_y:.2f}")
 
     # Costruisce mappa pair_N -> (col_offset, row_offset) dai file di registrazione
     REG_DIR = os.path.join(OUTPUT_DIR, "registrazione_allineamento")
@@ -337,7 +267,7 @@ def main():
 
             colore = determina_colore(d_json["salute"], d_json["label"])
 
-            # Rettangolo in spazio IR (coordinate pixel dirette - NON TOCCATO)
+            # Rettangolo in spazio IR (coordinate pixel dirette)
             xs_ir = box[:,0,0] + c_off
             ys_ir = box[:,0,1] + r_off
             ir_cnt = np.array([list(zip(xs_ir, ys_ir))], dtype=np.int32)
@@ -346,29 +276,6 @@ def main():
             M_ir = cv2.moments(ir_cnt)
             cx_ir = int(M_ir["m10"]/M_ir["m00"]) if M_ir["m00"] != 0 else 0
             cy_ir = int(M_ir["m01"]/M_ir["m00"]) if M_ir["m00"] != 0 else 0
-
-            # 2. Converti centroide IR -> Geografico -> Pixel RGB
-            lon, lat = rasterio.transform.xy(src_ir.transform, cy_ir, cx_ir)
-            xr_geo, yr_geo = transform_coords(src_ir.crs, src_rgb.crs, [lon], [lat])
-            row_rgb, col_rgb = rasterio.transform.rowcol(src_rgb.transform, xr_geo[0], yr_geo[0])
-            cx, cy = int(col_rgb), int(row_rgb)
-
-            # 3. Scala e posiziona la maschera per l'RGB
-            rgb_cnt_pts = []
-            for x, y in zip(xs_ir, ys_ir):
-                new_x = int((x - cx_ir) * scale_x + cx)
-                new_y = int((y - cy_ir) * scale_y + cy)
-                rgb_cnt_pts.append([new_x, new_y])
-            
-            m_cnt = np.array([rgb_cnt_pts], dtype=np.int32)
-
-            # 4. CORREZIONE DERIVA (SNAPPING SULL'IMMAGINE)
-            m_cnt = correggi_deriva_locale(rgb_canvas, m_cnt)
-
-            # Ricalcolo centroide corretto
-            M_rgb = cv2.moments(m_cnt)
-            cx_corr = int(M_rgb["m10"]/M_rgb["m00"]) if M_rgb["m00"] != 0 else cx
-            cy_corr = int(M_rgb["m01"]/M_rgb["m00"]) if M_rgb["m00"] != 0 else cy
 
             # --- NUOVO CALCOLO ECONOMICO (PONDERATO) ---
             if d_json["label"] == "DIFETTOSO":
@@ -387,7 +294,6 @@ def main():
                 euro_p = 0.0
 
             pannelli_globali.append({
-                'contour': m_cnt, 'centroid': (cx_corr, cy_corr),
                 'ir_contour': ir_cnt, 'ir_centroid': (cx_ir, cy_ir),
                 'eta': d_json["salute"],
                 'color': colore,
@@ -410,8 +316,8 @@ def main():
         if not any(cv2.pointPolygonTest(u['ir_contour'], p['ir_centroid'], False) >= 0 for u in unici):
             unici.append(p)
 
-    # Ordinamento e ID
-    unici.sort(key=lambda p: (p['centroid'][1], p['centroid'][0]))
+    # Ordinamento e ID (basato ora sulle coordinate IR)
+    unici.sort(key=lambda p: (p['ir_centroid'][1], p['ir_centroid'][0]))
     for i, p in enumerate(unici): p['id'] = i + 1
 
     # Disegno e Salvataggio CSV
@@ -420,9 +326,6 @@ def main():
         writer.writerow(["ID", "Stato", "Salute_%", "kWh_persi_anno", "Perdita_€_Anno"])
         for p in unici:
             label_txt = f"#{p['id']} {p['eta']:.0f}%"
-            # RGB
-            cv2.drawContours(rgb_canvas, p['contour'], -1, p['color'], 4)
-            testo_centrato(rgb_canvas, label_txt, p['centroid'][0], p['centroid'][1], p['color'])
             # IR
             cv2.drawContours(ir_canvas, p['ir_contour'], -1, p['color'], 4)
             testo_centrato(ir_canvas, label_txt, p['ir_centroid'][0], p['ir_centroid'][1], p['color'])
@@ -432,12 +335,6 @@ def main():
             euro_csv = round(p['euro_persi'], 2) if is_problematic else 0.0
             
             writer.writerow([p['id'], p['stato'], round(p['eta'], 2), kwh_csv, euro_csv])
-
-    # Export Mappa RGB
-    profile = src_rgb.profile.copy()
-    profile.update(count=3)
-    with rasterio.open(MAPPA_OUT_PATH, 'w', **profile) as dst:
-        dst.write(np.transpose(rgb_canvas, (2,0,1)))
 
     # Export Mappa IR
     profile_ir = src_ir.profile.copy()
@@ -479,7 +376,7 @@ def main():
     }
     genera_report_pdf_a2a(dati_rep, PDF_OUT_PATH)
 
-    print(f"\n[FINE] Digital Twin: {MAPPA_OUT_PATH}")
+    print(f"\n[FINE] Mappa Efficienza IR: {MAPPA_IR_OUT_PATH}")
     print(f"[FINE] Mappa Difettosi: {MAPPA_DIFETTOSI_OUT_PATH}")
     print(f"[FINE] Report PDF: {PDF_OUT_PATH}")
 
