@@ -33,7 +33,7 @@ WEIGHTS_PATH    = os.path.join(BASE_DIR, "weights.pt")
 # Output finali
 MAPPA_OUT_PATH           = os.path.join(OUTPUT_DIR, "mappa_efficienza_rgb.tif")
 MAPPA_IR_OUT_PATH        = os.path.join(OUTPUT_DIR, "mappa_efficienza_ir.tif")
-MAPPA_DIFETTOSI_OUT_PATH = os.path.join(OUTPUT_DIR, "mappa_difettosi_rgb.tif") # <-- AGGIUNTO
+MAPPA_DIFETTOSI_OUT_PATH = os.path.join(OUTPUT_DIR, "mappa_difettosi_ir.tif") # <-- AGGIORNATO IN IR
 PDF_OUT_PATH             = os.path.join(OUTPUT_DIR, "report_tecnico.pdf")
 CSV_UNICI                = os.path.join(OUTPUT_DIR, "report_pannelli_unici.csv")
 
@@ -446,19 +446,19 @@ def main():
         dst.write(np.transpose(ir_canvas, (2,0,1)))
 
     # ==============================================================================
-    # NUOVA AGGIUNTA: Export Mappa RGB con evidenziati SOLO pannelli difettosi
+    # NUOVA AGGIUNTA: Export Mappa IR con evidenziati SOLO pannelli difettosi
     # ==============================================================================
-    # Creiamo una copia pulita dell'ortomosaico RGB originale
-    difettosi_canvas = np.transpose(src_rgb.read([1,2,3]), (1,2,0)).copy()
+    # Creiamo una copia pulita dell'ortomosaico IR originale
+    difettosi_canvas = np.transpose(src_ir.read([1,2,3]), (1,2,0)).copy()
     
     # Disegniamo sopra solo i pannelli difettosi (contorno rosso e testo)
     for p in unici:
         if p['stato'] == "DIFETTOSO":
             label_txt = f"#{p['id']} {p['eta']:.0f}%"
-            cv2.drawContours(difettosi_canvas, [p['contour']], -1, p['color'], 4)
-            testo_centrato(difettosi_canvas, label_txt, p['centroid'][0], p['centroid'][1], p['color'])
+            cv2.drawContours(difettosi_canvas, [p['ir_contour']], -1, p['color'], 4)
+            testo_centrato(difettosi_canvas, label_txt, p['ir_centroid'][0], p['ir_centroid'][1], p['color'])
             
-    profile_dif = src_rgb.profile.copy()
+    profile_dif = src_ir.profile.copy()
     profile_dif.update(count=3)
     with rasterio.open(MAPPA_DIFETTOSI_OUT_PATH, 'w', **profile_dif) as dst:
         dst.write(np.transpose(difettosi_canvas, (2,0,1)))
