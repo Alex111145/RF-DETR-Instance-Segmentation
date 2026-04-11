@@ -172,7 +172,7 @@ def main():
     else:
         print("  Modalità --no-gui: taglio dell'intero mosaico")
 
-    # Taglio
+  
     print(f"\nTaglio in corso...")
     saved, skip_vuote, skip_fuori = taglia(img, args.output, mask, pts)
 
