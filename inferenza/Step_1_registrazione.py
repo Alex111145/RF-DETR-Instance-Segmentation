@@ -51,9 +51,9 @@ def get_gps_from_exif(path):
     except: return None
 
 
-MIN_BBOX_LATO  = 80      # lato minimo (px) del bbox per considerare valido l'allineamento
-MIN_BBOX_AREA  = 15000   # area minima (px²) del bbox
-MIN_MATCHES    = 20      # numero minimo di match ORB richiesti
+MIN_BBOX_LATO  = 80      
+MIN_BBOX_AREA  = 15000   
+MIN_MATCHES    = 20    
 
 def allinea_e_disegna(patch, drone_img):
     """Trova la patch nel drone tramite ORB+omografia.
@@ -89,7 +89,6 @@ def allinea_e_disegna(patch, drone_img):
 
     x, y, bw, bh = cv2.boundingRect(np.int32(dst))
 
-    # Scarta allineamenti degeneri (bbox troppo piccolo o striscia sottile)
     if bw < MIN_BBOX_LATO or bh < MIN_BBOX_LATO or bw * bh < MIN_BBOX_AREA:
         return None, None
 
@@ -137,7 +136,7 @@ def main():
 
     salvate = 0
     scartate = 0
-    pair_idx = 0  # indice progressivo solo per le coppie valide
+    pair_idx = 0  
 
     for i, p_path in enumerate(patch_files):
         filename = os.path.basename(p_path)
@@ -161,7 +160,7 @@ def main():
 
         patch_res, drone_res = allinea_e_disegna(img_patch, img_drone)
 
-        # Scarta coppie con allineamento degenere (bbox troppo piccolo)
+       
         if patch_res is None:
             scartate += 1
             print(f"[{i+1}/{len(patch_files)}] SCARTATA: {filename} (allineamento non valido)", flush=True)
