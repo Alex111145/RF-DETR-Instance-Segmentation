@@ -16,32 +16,29 @@ from tqdm import tqdm
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 warnings.filterwarnings("ignore")
 
-# ==============================================================================
-# CONFIGURAZIONE PERCORSI E COSTANTI
-# ==============================================================================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUT_DIR = os.path.join(BASE_DIR, "risultati_finali")
 
-# File generati dagli step precedenti
+
 JSON_EFFICIENZA = os.path.join(OUTPUT_DIR, "efficienza_risultati", "efficienza_dati.json")
 PATCH_IR_DIR    = os.path.join(BASE_DIR, "training_patches_ir")
 IR_MOSAIC       = os.path.join(BASE_DIR, "ortomosaicoir.tif")
 WEIGHTS_PATH    = os.path.join(BASE_DIR, "weights.pt")
 
-# Output finali
+
 MAPPA_IR_OUT_PATH        = os.path.join(OUTPUT_DIR, "mappa_efficienza_ir.tif")
 MAPPA_DIFETTOSI_OUT_PATH = os.path.join(OUTPUT_DIR, "mappa_difettosi_ir.tif")
 PDF_OUT_PATH             = os.path.join(OUTPUT_DIR, "report_tecnico.pdf")
 CSV_UNICI                = os.path.join(OUTPUT_DIR, "report_pannelli_unici.csv")
 
-# Parametri Economici (Nuova formula ponderata)
-COSTO_KWH_ACQUISTO = 0.40   # Quota autoconsumata (risparmio in bolletta)
+
+COSTO_KWH_ACQUISTO = 0.40   # Quota autoconsumata
 COSTO_KWH_VENDITA  = 0.10   # Quota immessa in rete (vendita GSE)
 PCT_AUTOCONSUMO    = 0.40   # 40% autoconsumo, 60% immissione in rete
 GIORNI_UTIL        = 300
 SOGLIA_AREA_PX     = 10000 
 
-# Palette Colori A2A (BGR)
+
 C_PRIMARY = (159, 91, 0)   
 C_SUCCESS = (80, 175, 76)  
 C_WARNING = (0, 152, 255)
@@ -50,14 +47,12 @@ C_DANGER  = (54, 67, 244)
 C_TEXT    = (50, 50, 50)   
 C_LIGHT   = (240, 245, 245) 
 
-# Colori in ordine RGB (canvas caricato da rasterio in RGB)
+
 COLOR_VERDE  = (0, 255, 0)
 COLOR_GIALLO = (255, 255, 0)
 COLOR_ROSSO  = (255, 0, 0)
 
-# ==============================================================================
-# FUNZIONI DI SUPPORTO
-# ==============================================================================
+
 def estrai_gps_da_drone():
     """Legge la prima foto drone disponibile ed estrae le coordinate GPS dall'EXIF."""
     foto_dir = os.path.join(BASE_DIR, "foto_drone")
@@ -138,9 +133,7 @@ def disegna_grafico_a_ciambella(canvas, cx, cy, r, eta_media_pct):
     (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 1.8, 4)
     cv2.putText(canvas, label, (cx - tw//2, cy + th//2), cv2.FONT_HERSHEY_SIMPLEX, 1.8, C_TEXT, 4, cv2.LINE_AA)
 
-# ==============================================================================
-# GENERAZIONE PDF
-# ==============================================================================
+
 def genera_report_pdf_a2a(dati, pdf_path):
     w, h = 1240, 1754 
     canvas = np.ones((h, w, 3), dtype=np.uint8) * 255
@@ -150,7 +143,7 @@ def genera_report_pdf_a2a(dati, pdf_path):
     col1_x, col2_x = 80, 650
     y_cursor = 250
     
-    # Sezione Statistiche (Ingrandita)
+
     cv2.putText(canvas, "STATISTICHE IMPIANTO", (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 1.1, C_TEXT, 3)
     y_cursor += 70
     rows = [
@@ -164,10 +157,10 @@ def genera_report_pdf_a2a(dati, pdf_path):
         cv2.putText(canvas, val, (col1_x + 400, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
         y_cursor += 50
 
-    # Grafico Ciambella (adattato alla nuova spaziatura)
+
     disegna_grafico_a_ciambella(canvas, col2_x + 250, 420, 150, dati['eta_media_impianto'])
 
-    # Perdite Economiche (Unico Blocco Centrale)
+
     y_cursor = 730
     box_h = 160
     cv2.rectangle(canvas, (col1_x, y_cursor), (w-80, y_cursor+box_h), C_LIGHT, -1)
@@ -175,17 +168,17 @@ def genera_report_pdf_a2a(dati, pdf_path):
     
     cv2.putText(canvas, "STIMA MANCATO GUADAGNO ANNUO", (col1_x + 40, y_cursor + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_TEXT, 2)
     
-    # Singola riga totale per i difettosi
+
     cv2.putText(canvas, "Perdita Totale (Moduli Difettosi):", (col1_x + 40, y_cursor + 115), cv2.FONT_HERSHEY_SIMPLEX, 0.8, C_DANGER, 2)
     
-    # Calcolo dinamico della larghezza del testo per allinearlo perfettamente a destra
+
     testo_importo = f"EUR {dati['perdita_euro_totale']:.2f}"
     (text_width, _), _ = cv2.getTextSize(testo_importo, cv2.FONT_HERSHEY_SIMPLEX, 1.4, 3)
-    x_right_align = (w - 80) - text_width - 40 # Scatola finisce a (w-80), meno 40 di padding
+    x_right_align = (w - 80) - text_width - 40 
     
     cv2.putText(canvas, testo_importo, (x_right_align, y_cursor + 115), cv2.FONT_HERSHEY_SIMPLEX, 1.4, C_DANGER, 3)
 
-    # Top 5 Moduli
+ 
     y_cursor += box_h + 80
     cv2.putText(canvas, "TOP 5 MODULI CRITICI (DA SOSTITUIRE)", (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.9, C_DANGER, 2)
     y_cursor += 50
@@ -194,15 +187,12 @@ def genera_report_pdf_a2a(dati, pdf_path):
         cv2.putText(canvas, txt, (col1_x, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.65, C_TEXT, 1)
         y_cursor += 40
 
-    # Footer
+
     cv2.rectangle(canvas, (0, h-60), (w, h), (40, 40, 40), -1)
     cv2.putText(canvas, "Generato tramite AI - Analisi Termografica Avanzata", (50, h-25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
     Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)).save(pdf_path, "PDF", resolution=150.0)
 
-# ==============================================================================
-# MAIN
-# ==============================================================================
 def main():
     print("\n" + "="*60 + "\n GENERAZIONE DIGITAL TWIN & REPORT FINALE \n" + "="*60)
 
@@ -219,11 +209,10 @@ def main():
     with open(JSON_EFFICIENZA, "r") as f:
         db_step4 = json.load(f)
 
-    # Inizializzazione Mosaico IR
+ 
     src_ir = rasterio.open(IR_MOSAIC)
     ir_canvas  = np.transpose(src_ir.read([1,2,3]), (1,2,0)).copy()
 
-    # Costruisce mappa pair_N -> (col_offset, row_offset) dai file di registrazione
     REG_DIR = os.path.join(OUTPUT_DIR, "registrazione_allineamento")
     pair_to_offset = {}
     for reg_file in glob.glob(os.path.join(REG_DIR, "pair*_tile_col_*_row_*.jpg")):
@@ -231,7 +220,6 @@ def main():
         if m:
             pair_to_offset[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
 
-    # ESH e giorni utili da PVGIS usando coordinate GPS reali dal drone
     lat_drone, lon_drone = estrai_gps_da_drone()
     if lat_drone is not None:
         print(f"[*] Coordinate volo: {lat_drone:.5f}°N, {lon_drone:.5f}°E — interrogo PVGIS...")
@@ -245,7 +233,7 @@ def main():
     pannelli_globali = []
 
     for nome_patch, rilevamenti in tqdm(db_step4.items(), desc="Mappatura Geografica"):
-        # Recupero offset
+
         pair_num = int(re.search(r"pair(\d+)_", nome_patch).group(1))
         if pair_num not in pair_to_offset:
             continue
@@ -261,33 +249,29 @@ def main():
             pts = np.array(points, dtype=np.int32).reshape(-1, 1, 2)
             if len(pts) < 3: continue
 
-            # Rettangolo orientato (minAreaRect) -> 4 punti
             rect = cv2.minAreaRect(pts)
             box = cv2.boxPoints(rect).astype(np.int32).reshape(-1, 1, 2)
 
             colore = determina_colore(d_json["salute"], d_json["label"])
 
-            # Rettangolo in spazio IR (coordinate pixel dirette)
             xs_ir = box[:,0,0] + c_off
             ys_ir = box[:,0,1] + r_off
             ir_cnt = np.array([list(zip(xs_ir, ys_ir))], dtype=np.int32)
 
-            # 1. Trova il centroide in coordinate pixel IR
             M_ir = cv2.moments(ir_cnt)
             cx_ir = int(M_ir["m10"]/M_ir["m00"]) if M_ir["m00"] != 0 else 0
             cy_ir = int(M_ir["m01"]/M_ir["m00"]) if M_ir["m00"] != 0 else 0
 
-            # --- NUOVO CALCOLO ECONOMICO (PONDERATO) ---
             if d_json["label"] == "DIFETTOSO":
-                p_max = 350 # Watt nominali stimati per pannello
+                p_max = 350 
                 p_persa = p_max * (1 - (d_json["salute"]/100))
                 kwh_persi_anno = (p_persa / 1000) * esh * giorni_utili
                 
-                # Scomposizione tra Autoconsumo e Rete Elettrica
+              
                 quota_autoconsumo = kwh_persi_anno * PCT_AUTOCONSUMO
                 quota_rete = kwh_persi_anno * (1.0 - PCT_AUTOCONSUMO)
                 
-                # Formula aggiornata
+      
                 euro_p = (quota_autoconsumo * COSTO_KWH_ACQUISTO) + (quota_rete * COSTO_KWH_VENDITA)
             else:
                 kwh_persi_anno = 0.0
@@ -301,7 +285,7 @@ def main():
                 'euro_persi': euro_p, 'stato': d_json["label"]
             })
 
-    # Filtro area
+
     if pannelli_globali:
         aree_ir = np.array([cv2.contourArea(p['ir_contour']) for p in pannelli_globali], dtype=np.float32)
         area_media = float(np.mean(aree_ir))
@@ -309,24 +293,22 @@ def main():
         pannelli_globali = [p for p in pannelli_globali if cv2.contourArea(p['ir_contour']) >= area_media]
         print(f"[*] Pannelli dopo filtro area: {len(pannelli_globali)}")
 
-    # NMS (Rimozione duplicati)
+  
     pannelli_globali.sort(key=lambda x: cv2.contourArea(x['ir_contour']), reverse=True)
     unici = []
     for p in pannelli_globali:
         if not any(cv2.pointPolygonTest(u['ir_contour'], p['ir_centroid'], False) >= 0 for u in unici):
             unici.append(p)
-
-    # Ordinamento e ID (basato ora sulle coordinate IR)
     unici.sort(key=lambda p: (p['ir_centroid'][1], p['ir_centroid'][0]))
     for i, p in enumerate(unici): p['id'] = i + 1
 
-    # Disegno e Salvataggio CSV
+ 
     with open(CSV_UNICI, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["ID", "Stato", "Salute_%", "kWh_persi_anno", "Perdita_€_Anno"])
         for p in unici:
             label_txt = f"#{p['id']} {p['eta']:.0f}%"
-            # IR
+           
             cv2.drawContours(ir_canvas, p['ir_contour'], -1, p['color'], 4)
             testo_centrato(ir_canvas, label_txt, p['ir_centroid'][0], p['ir_centroid'][1], p['color'])
             
@@ -336,19 +318,15 @@ def main():
             
             writer.writerow([p['id'], p['stato'], round(p['eta'], 2), kwh_csv, euro_csv])
 
-    # Export Mappa IR
+ 
     profile_ir = src_ir.profile.copy()
     profile_ir.update(count=3)
     with rasterio.open(MAPPA_IR_OUT_PATH, 'w', **profile_ir) as dst:
         dst.write(np.transpose(ir_canvas, (2,0,1)))
 
-    # ==============================================================================
-    # NUOVA AGGIUNTA: Export Mappa IR con evidenziati SOLO pannelli difettosi
-    # ==============================================================================
-    # Creiamo una copia pulita dell'ortomosaico IR originale
     difettosi_canvas = np.transpose(src_ir.read([1,2,3]), (1,2,0)).copy()
     
-    # Disegniamo sopra solo i pannelli difettosi (contorno rosso e testo)
+  
     for p in unici:
         if p['stato'] == "DIFETTOSO":
             label_txt = f"#{p['id']} {p['eta']:.0f}%"
@@ -359,9 +337,7 @@ def main():
     profile_dif.update(count=3)
     with rasterio.open(MAPPA_DIFETTOSI_OUT_PATH, 'w', **profile_dif) as dst:
         dst.write(np.transpose(difettosi_canvas, (2,0,1)))
-    # ==============================================================================
 
-    # Generazione Report PDF
     perdita_difettosi = sum(p['euro_persi'] for p in unici if p['stato'] == "DIFETTOSO")
     
     dati_rep = {
