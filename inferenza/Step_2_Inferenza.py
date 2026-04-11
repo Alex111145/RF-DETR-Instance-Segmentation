@@ -28,7 +28,7 @@ NAME_MAP  = {0: "SANO", 1: "DIFETTOSO", 2: "SANO"}
 
 def stima_batch_size(vram_free_mb: int) -> int:
     """Stima batch_size ottimale in base alla VRAM libera dopo il caricamento del modello."""
-    # ~500 MB per immagine (attivazioni backbone+decoder a 560x560 float16)
+
     vram_per_img_mb = 500
     reserved_mb     = 1000   # margine di sicurezza
     available_mb    = max(0, vram_free_mb - reserved_mb)
@@ -40,7 +40,7 @@ def load_image(path):
     img_bgr = cv2.imread(path)
     if img_bgr is None:
         return None
-    # [:,:,::-1] è una view BGR→RGB senza copia; Image.fromarray copia internamente
+   
     img_pil = Image.fromarray(img_bgr[:, :, ::-1])
     return path, img_bgr, img_pil
 
@@ -97,7 +97,7 @@ def main():
 
     os.makedirs(args.output, exist_ok=True)
 
-    # ── Info GPU ──────────────────────────────────────────────────────────
+ 
     if torch.cuda.is_available():
         props         = torch.cuda.get_device_properties(0)
         vram_total_mb = props.total_memory // 1024 ** 2
@@ -112,7 +112,7 @@ def main():
     print("[*] Caricamento modello (3 classi)...")
     model = RFDETRSegLarge(pretrain_weights=WEIGHTS_PATH, num_classes=3)
 
-    # VRAM residua dopo il caricamento del modello
+
     if torch.cuda.is_available():
         vram_used_mb = torch.cuda.memory_allocated(0) // 1024 ** 2
         vram_free_mb = vram_total_mb - vram_used_mb
@@ -123,9 +123,7 @@ def main():
     batch_size = args.batch_size if args.batch_size > 0 else stima_batch_size(vram_free_mb)
     print(f"[*] Batch size: {batch_size}")
 
-    # ── Ottimizzazione JIT + float16 ──────────────────────────────────────
-    # compile=True → torch.jit.trace con batch fisso (max throughput)
-    # dtype=float16 → Tensor Cores, dimezza l'uso VRAM
+
     print(f"[*] Compilazione JIT float16 (batch={batch_size}) — attendi...")
     model.optimize_for_inference(
         compile=True,
@@ -142,7 +140,7 @@ def main():
     with ThreadPoolExecutor(max_workers=args.prefetch, thread_name_prefix="load") as load_pool:
         futures = [load_pool.submit(load_image, p) for p in files]
 
-        # Raggruppa in batch di dimensione fissa
+   
         batches = [futures[i : i + batch_size] for i in range(0, len(futures), batch_size)]
 
         pbar = tqdm(total=len(files), desc="Inferenza")
@@ -155,7 +153,7 @@ def main():
 
             n_real = len(loaded)
 
-            # JIT richiede batch esattamente uguale a quello compilato → padding
+ 
             if n_real < batch_size:
                 pad     = [loaded[-1]] * (batch_size - n_real)
                 pil_in  = [x[2] for x in loaded + pad]
@@ -163,7 +161,7 @@ def main():
                 pil_in  = [x[2] for x in loaded]
 
             results_batch = model.predict(pil_in, threshold=args.threshold)
-            # predict restituisce lista solo se len > 1
+           
             if not isinstance(results_batch, list):
                 results_batch = [results_batch]
 
