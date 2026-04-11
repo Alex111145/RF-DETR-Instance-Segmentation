@@ -19,7 +19,6 @@ RF-DETR-Instance-Segmentation/
 ├── foto_drone/               # Foto RJPEG del drone DJI (IR + dati GPS)
 ├── training_patches_ir/      # Tile 640×640 estratte dall'ortomosaico IR
 ├── ortomosaicoir.tif         # Ortomosaico infrarosso georeferenziato
-├── ortomosaicorgb.tif        # Ortomosaico RGB georeferenziato
 ├── weights.pt                # Pesi del modello RF-DETR addestrato
 ├── sdk/
 │   ├── linux/                # Binari DJI SDK per Linux (dji_irp, libdirp.so, ecc.)
@@ -32,7 +31,7 @@ RF-DETR-Instance-Segmentation/
 │   ├── efficienza_risultati/ # CSV dati grezzi + immagini efficienza
 │   │   ├── dati_grezzi.csv
 │   │   └── config_analisi.json
-│   ├── mappa_efficienza_rgb.tif  # Ortomosaico RGB con poligoni colorati
+│   ├── mappa_pannelli_difettosi.tif  # Ortomosaico IR con poligoni colorati
 │   ├── report_pannelli_unici.csv # CSV finale con ID, stato, perdite per pannello
 │   └── report_tecnico.pdf        # Report PDF stile professionale
 └── requirements.txt
@@ -100,7 +99,6 @@ Prima di avviare la pipeline assicurati di avere nella cartella `RF-DETR-Instanc
 | File / Cartella | Descrizione |
 |---|---|
 | `ortomosaicoir.tif` | Ortomosaico IR georeferenziato (GeoTIFF) |
-| `ortomosaicorgb.tif` oppure `ortomosaiccrgb.tif` | Ortomosaico RGB georeferenziato |
 | `training_patches_ir/*.jpg` | Tile IR (512×512) con nome `tile_col_X_row_Y.jpg` |
 | `foto_drone/*.JPG` | Foto RJPEG originali del drone DJI con GPS EXIF |
 | `weights.pt` | Pesi del modello RF-DETR (2 classi: Sano/Difettoso) |
@@ -201,7 +199,7 @@ python Step_5_Mosaico.py
 ```
 **Cosa fa:** Legge i risultati del Step 4 e genera i tre output finali:
 
-1. **Mappa GeoTIFF** (`mappa_efficienza_rgb.tif`): riproietta i contorni dei pannelli dallo spazio pixel IR alle coordinate geografiche dell'ortomosaico RGB usando `rasterio.warp.transform` (conversione CRS IR→RGB). Disegna poligoni colorati sull'ortomosaico RGB:
+1. **Mappa GeoTIFF** (`mappa_pannelli_difettosi.tif`): riproietta i contorni dei pannelli dallo spazio pixel IR alle coordinate geografiche usando `rasterio.warp.transform`. Disegna poligoni colorati sull'ortomosaico IR:
    - Verde: efficienza ≥ 90%
    - Giallo: efficienza 80–89%
    - Rosso: efficienza < 80%
@@ -233,7 +231,7 @@ Puoi modificare le costanti in cima a ogni script:
 
 | File | Descrizione |
 |---|---|
-| `risultati_finali/mappa_efficienza_rgb.tif` | Ortomosaico RGB georeferenziato con pannelli colorati per stato |
+| `risultati_finali/mappa_pannelli_difettosi.tif` | Ortomosaico IR georeferenziato con pannelli colorati per stato |
 | `risultati_finali/report_pannelli_unici.csv` | Tabella con ID, stato, efficienza e perdite economiche per pannello |
 | `risultati_finali/report_tecnico.pdf` | Report PDF professionale con grafici e analisi economica |
 
