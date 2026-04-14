@@ -1,6 +1,6 @@
 # Ispezione Fotovoltaico UAV — Pipeline Termografica AI
 
-Sistema di analisi automatica di impianti fotovoltaici tramite ispezione UAV con doppia telecamera (IR + RGB). Utilizza un modello AI di segmentazione (RF-DETR) per identificare i pannelli e calcola l'efficienza termodinamica di ciascun modulo.
+Sistema di analisi automatica di impianti fotovoltaici tramite ispezione UAV. Utilizza un modello AI di segmentazione (RF-DETR) per identificare i pannelli e calcola l'efficienza termodinamica di ciascun modulo.
 
 ---
 
@@ -17,8 +17,7 @@ RF-DETR-Instance-Segmentation/
 │   ├── Step_3_Temperatura.py     # Step 3: Analisi termica per pannello
 │   ├── Step_4_Efficienza.py      # Step 4: Calcolo efficienza termodinamica
 │   └── Step_5_Mosaico.py         # Step 5: Digital Twin + Report PDF + Mappa GeoTIFF
-├── foto_drone/                   # Foto RJPEG del drone DJI (IR + dati GPS)
-├── training_patches_ir/          # Tile 640×640 estratte dall'ortomosaico IR (pipeline standard)
+├── foto_drone/                   # Foto RJPEG del drone DJI (IR + dati GPS)                             
 ├── ortomosaicoir.tif             # Ortomosaico infrarosso georeferenziato (inferenza)
 ├── ortomosaico.tif               # Ortomosaico infrarosso georeferenziato (addestramento)
 ├── weights.pt                    # Pesi del modello RF-DETR addestrato
@@ -28,6 +27,7 @@ RF-DETR-Instance-Segmentation/
 ├── risultati_finali/             # Output generati automaticamente dagli script
 │   ├── pair/                     # Coppie patch_IR + foto_drone originali
 │   ├── registrazione_allineamento/  # Immagini affiancate per controllo visivo
+│   ├ ── training_patches_ir/   # Tile 504×504 estratte dall'ortomosaico IR (pipeline standard)
 │   ├── inferenza_pannelli/       # Patch annotate con box/maschere AI
 │   ├── analisi_termica/          # Patch annotate con temperatura per pannello
 │   ├── efficienza_risultati/     # CSV dati grezzi + immagini efficienza
