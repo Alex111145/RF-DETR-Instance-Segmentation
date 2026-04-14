@@ -212,7 +212,7 @@ python Step_1_registrazione.py
 - `risultati_finali/pair/pairN_drone.jpg` — copia della foto drone (bit-a-bit)
 - `risultati_finali/registrazione_allineamento/` — immagini affiancate per verifica visiva
 
-**Librerie chiave:** `rasterio` (CRS/transform), `OpenCV` (ORB, BFMatcher, findHomography), `PIL` (lettura EXIF GPS)
+
 
 ---
 
@@ -225,7 +225,7 @@ python Step_2_Inferenza.py --threshold 0.30
 
 **Cosa fa:** Carica il modello `RFDETRSegLarge` con i pesi `weights.pt`. Per ogni `pairN_patch.jpg` esegue la segmentazione con soglia di confidenza configurabile. Disegna i contorni delle maschere (o bounding box se la maschera non è disponibile) con colore verde (Sano) o rosso (Difettoso). Salva i risultati annotati in `risultati_finali/inferenza_pannelli/`.
 
-**Librerie chiave:** `rfdetr` (modello AI), `OpenCV` (findContours, drawContours, moments), `PIL` (conversione BGR→RGB per il modello)
+
 
 ---
 
@@ -243,7 +243,7 @@ python Step_3_Temperatura.py --threshold 0.30
 
 Per ogni pannello rilevato, proietta la maschera AI nello spazio della foto drone tramite omografia ORB, campiona la matrice termica nella ROI e calcola la temperatura media. Annota ogni pannello con la temperatura in °C.
 
-**Librerie chiave:** `rfdetr`, `OpenCV` (warpPerspective, ORB), `numpy` (frombuffer, mean), `subprocess` (SDK DJI)
+
 
 ---
 
@@ -285,7 +285,7 @@ python Step_5_Mosaico.py
 
 3. **Report PDF** (`report_tecnico.pdf`): documento A4 generato con OpenCV + PIL che include grafico a ciambella dell'efficienza media, statistiche impianto, impatto economico (calcolato con dati ESH da [PVGIS](https://re.jrc.ec.europa.eu/pvg_tools/)) e top 5 moduli critici.
 
-**Librerie chiave:** `rasterio` (CRS transform, GeoTIFF write), `rfdetr`, `OpenCV` (rendering PDF), `PIL` (save PDF), `urllib` (PVGIS API)
+
 
 ---
 
@@ -323,13 +323,3 @@ Gli script `Step_4_Efficienza.py` e `Step_5_Mosaico.py` effettuano chiamate a:
 Se non c'è connessione internet, vengono usati valori di default (`T_amb = 25°C`, `ESH = 3.18 h/giorno`).
 
 ---
-
-## Dipendenze
-
-| Libreria | Uso |
-|---|---|
-| `opencv-python` | Computer vision (ORB, omografia, contorni, rendering annotazioni) |
-| `numpy` | Operazioni su matrici termiche e maschere |
-| `rasterio` | Lettura/scrittura GeoTIFF, trasformazioni CRS geografiche |
-| `Pillow` | Lettura EXIF/XMP, conversione immagini, salvataggio PDF |
-| `rfdetr` | Modello AI RF-DETR per segmentazione istanza dei pannelli |
