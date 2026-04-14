@@ -113,28 +113,56 @@ Gli script vanno eseguiti **in sequenza** dalla cartella `inferenza/`:
 cd RF-DETR-Instance-Segmentation/inferenza
 ```
 
+---
+
 ### Step 0 — Taglio Ortomosaico IR in Patch
+
+> **Variante tesi** (`Step_0_patch.py`): script con interfaccia grafica interattiva obbligatoria, pensato per la selezione manuale precisa dell'area dell'impianto.
+
 ```bash
-# Con GUI (selezione area interattiva a 4 punti con il mouse)
-python Step_0_patch.py 
-
-# Senza GUI (taglia tutto il mosaico automaticamente)
-python Step_0_patch.py  --no-gui
-
-# Con parametri personalizzati
-python Step_0_patch.py--tile 640 --overlap 0.20 --no-gui
+python Step_0_patch.py
 ```
-**Cosa fa:** Legge l'ortomosaico IR, mostra una finestra OpenCV dove puoi cliccare 4 punti per delimitare l'area dell'impianto (premi `C` per confermare, `R` per resettare, `ESC` per tagliare tutto). Divide l'immagine in tile 640×640 px con overlap configurabile (default 50%), scartando le patch con meno del 20% di pixel non-neri (bordi neri del mosaico). Salva i file con nome `tile_col_X_row_Y.jpg`, dove X e Y sono gli offset in pixel — necessari negli step successivi per riproiettare le coordinate.
 
-**Argomenti:**
-| Argomento | Default | Descrizione |
+**Cosa fa:**
+Carica l'ortomosaico `ortomosaico.tif` dalla cartella radice del progetto e lo riduce al 15% per la preview (in modo da visualizzarlo anche su mosaici di grandi dimensioni). Apre una finestra OpenCV dove si cliccano **4 punti** per definire un'area poligonale di interesse. Una volta confermata la selezione, calcola il bounding rect del poligono e genera una maschera binaria pixel-level: solo le patch il cui **centro cade all'interno del poligono** vengono ritagliate. Le patch con meno del 20% di pixel non-neri (bordi neri del mosaico) vengono scartate automaticamente. I file vengono salvati nella cartella `my_thesis_data/` con nome `tile_col_X_row_Y.jpg`, dove X e Y sono gli offset in pixel — indispensabili negli step successivi per riproiettare le coordinate.
+
+**Comandi interattivi durante la selezione:**
+
+| Tasto | Azione |
+|---|---|
+| Click sinistro | Aggiunge un punto (massimo 4) |
+| `r` | Resetta tutti i punti e ricomincia |
+| `c` | Conferma la selezione (solo con 4 punti) |
+| `ESC` | Esce senza salvare |
+
+**Parametri interni configurabili (costanti in cima allo script):**
+
+| Costante | Valore Default | Descrizione |
 |---|---|---|
-| `--input` / `-i` | `../ortomosaicoir.tif` | Path ortomosaico input |
-| `--no-gui` | — | Salta selezione GUI, taglia tutto |
-| `--tile` | `640` | Dimensione patch in pixel |
-| `--overlap` | `0.20` | Overlap tra patch adiacenti (0.0–0.9) |
+| `TILE_SIZE` | `504` px | Dimensione delle patch quadrate estratte |
+| `OVERLAP` | `0.30` | Sovrapposizione tra patch adiacenti (30%) |
+| `IGNORE_EMPTY_THRESHOLD` | `0.20` | Soglia minima pixel non-neri per tenere una patch |
+| `INPUT_IMAGE_PATH` | `../ortomosaico.tif` | Path del mosaico di input |
+| `OUTPUT_DIR` | `../my_thesis_data/` | Cartella di destinazione delle patch |
 
-**Librerie chiave:** `OpenCV` (imread, resize, fillPoly, imwrite), `numpy`
+**Output generato:**
+
+| File | Descrizione |
+|---|---|
+| `my_thesis_data/tile_col_X_row_Y.jpg` | Patch 504×504 px ritagliata dal mosaico, con offset X, Y in pixel |
+
+**Differenze rispetto alla versione pipeline standard:**
+
+| Aspetto | Versione pipeline (`Step_0_patch.py` standard) | Variante tesi |
+|---|---|---|
+| Interfaccia | GUI opzionale (`--no-gui` disponibile) | GUI obbligatoria (nessun argomento CLI) |
+| Tile size | 640 px | 504 px |
+| Overlap | 20% | 30% |
+| Input mosaico | `ortomosaicoir.tif` | `ortomosaico.tif` |
+| Output cartella | `training_patches_ir/` | `my_thesis_data/` |
+| Filtraggio area | Centro tile dentro poligono | Centro tile dentro poligono |
+
+**Librerie chiave:** `OpenCV` (imread, resize, fillPoly, boundingRect, imwrite), `numpy`
 
 ---
 
