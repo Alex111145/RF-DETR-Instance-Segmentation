@@ -64,9 +64,6 @@ cp /root/RF-DETR-Instance-Segmentation/sdk/linux/*.so* /usr/lib/
 ldconfig
 ```
 
-> Questi passaggi sono necessari per gli Step 3 e 4. Se non vengono eseguiti, gli script ricadono automaticamente sul parsing binario RAW (Strategia 1), che funziona per la maggior parte dei sensori DJI standard (640×512).
-
----
 
 ## Creazione dell'Ambiente Virtuale
 
@@ -86,11 +83,6 @@ pip install --upgrade pip
 # 5. Installa le dipendenze
 pip install -r RF-DETR-Instance-Segmentation/requirements.txt
 ```
-
-> **Nota su rfdetr:** se il pacchetto non è su PyPI nella versione richiesta, installalo da sorgente o da wheel fornita dal progetto:
-> ```bash
-> pip install rfdetr --extra-index-url <url-repo-privato>
-> ```
 
 ---
 
