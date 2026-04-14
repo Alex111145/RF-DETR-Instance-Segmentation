@@ -299,7 +299,7 @@ Puoi modificare le costanti in cima a ogni script:
 | `G_IRR_STC` | `Step_5_Mosaico.py` | `1000.0 W/m²` | Irraggiamento condizioni standard |
 | `COSTO_KWH` | `Step_5_Mosaico.py` | `0.40 €` | Prezzo energia per calcolo economico |
 | `GIORNI_UTIL` | `Step_5_Mosaico.py` | `300` giorni | Giorni di produzione annua stimati |
-| `EPSILON_VETRO` | `Step_4_Efficienza.py` | `0.90` | Emissività del vetro fotovoltaico |
+| `EPSILON_VETRO` | `Step_4_Efficienza.py` | `0.95` | Emissività del vetro fotovoltaico |
 
 ---
 
